@@ -229,6 +229,20 @@ tbody tr:hover{background:#FAFBFE}
   .f2{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 .hide{display:none!important}
+
+/* ---------- 云同步提示条 ---------- */
+.syncbar{background:var(--brand-soft);border-bottom:1px solid var(--brand-line);
+  padding:9px 24px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  font-size:13.5px;color:var(--brand-2)}
+.syncbar .sp{flex:1}
+.syncbar button{font-size:13px;padding:5px 12px;border-radius:7px;font-weight:500}
+.syncbar .b1{background:var(--brand);color:#fff}
+.syncbar .b2{background:transparent;color:var(--ink2);border:1px solid var(--line2)}
+.syncbar.warn{background:var(--warn-soft);border-bottom-color:#F5DFA8;color:#8A5A06}
+.syncbar.warn .b1{background:var(--warn);color:#fff}
+.pairtxt{width:100%;font-family:ui-monospace,Consolas,monospace;font-size:11.5px;
+  line-height:1.5;word-break:break-all;background:var(--bg);border:1px solid var(--line);
+  border-radius:var(--r-s);padding:9px 10px;margin-top:8px;color:var(--ink2)}
 </style>
 </head>
 <body>
@@ -242,6 +256,7 @@ tbody tr:hover{background:#FAFBFE}
     <div class="side-foot" id="sideFoot"></div>
   </aside>
   <main class="main">
+    <div id="syncBar" class="syncbar hide"></div>
     <header class="topbar">
       <div>
         <div class="tt" id="pgTitle">投资规划</div>
@@ -372,7 +387,7 @@ function seedState(){
     logs:[],
     dividends:[],
     tempCfg:{bondYield:1.8,peLow:25,peHigh:60,brHigh:16,brLow:1,gapCold:4,gapHot:-1},
-    settings:{cloudKey:"",cloudBin:"",autoSnap:true,lastSync:""}
+    settings:{cloudKey:"",cloudBin:"",autoSnap:true,lastSync:"",syncedAt:"",deviceId:"",autoSync:false}
   };
 }
 function defaultRules(){
@@ -428,22 +443,30 @@ function load(){
   if(!S.plan.longTerm) S.plan.longTerm=d.plan.longTerm;
   if(!S.plan.yearly)   S.plan.yearly=d.plan.yearly;
   if(!S.plan.fourMoney)S.plan.fourMoney=d.plan.fourMoney;
+  /* settings 的新字段（云端拉回旧数据时可能没有）要在这里补齐 */
+  var sd=d.settings||{};
+  Object.keys(sd).forEach(function(k){ if(S.settings[k]===undefined) S.settings[k]=sd[k]; });
   if(!Array.isArray(S.rules)||!S.rules.length) S.rules=defaultRules();
   if(!Array.isArray(S.plan.disciplines)||!S.plan.disciplines.length)
     S.plan.disciplines=DEFAULT_DISCIPLINES.map(function(t){return {id:uid(),text:t,done:false};});
   return S;
 }
-function save(){
+/* opts.noCloud=true 时不再回过头调度云端上传（云端上传本身用它，防止无限递归） */
+function persist(opts){
+  opts=opts||{};
   try{ localStorage.setItem(KEY, JSON.stringify(S)); }
   catch(e){ toast("保存失败：存储空间不足"); return; }
-  if(!DESKTOP.ok) return;
-  /* 桌面版：同时写一份到本地文件（防抖 400ms，避免高频操作时反复写盘） */
-  clearTimeout(DESKTOP.pending);
-  DESKTOP.pending=setTimeout(function(){
-    fetch("/api/save",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify(S)}).catch(function(){});
-  },400);
+  if(DESKTOP.ok){
+    /* 桌面版：同时写一份到本地文件（防抖 400ms，避免高频操作时反复写盘） */
+    clearTimeout(DESKTOP.pending);
+    DESKTOP.pending=setTimeout(function(){
+      fetch("/api/save",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify(S)}).catch(function(){});
+    },400);
+  }
+  if(!opts.noCloud) scheduleCloudPush();
 }
+function save(){ persist(); }
 /* 桌面版：启动时从文件读，覆盖 localStorage 里可能过期的副本 */
 function loadFromDesktop(cb){
   desktopProbe(function(ok){
@@ -468,6 +491,9 @@ function normalizeState(){
   if(!S.plan.longTerm) S.plan.longTerm=d.plan.longTerm;
   if(!S.plan.yearly)   S.plan.yearly=d.plan.yearly;
   if(!S.plan.fourMoney)S.plan.fourMoney=d.plan.fourMoney;
+  /* settings 的新字段（云端拉回旧数据时可能没有）要在这里补齐 */
+  var sd=d.settings||{};
+  Object.keys(sd).forEach(function(k){ if(S.settings[k]===undefined) S.settings[k]=sd[k]; });
   if(!Array.isArray(S.rules)||!S.rules.length) S.rules=defaultRules();
   if(!Array.isArray(S.plan.disciplines)||!S.plan.disciplines.length)
     S.plan.disciplines=DEFAULT_DISCIPLINES.map(function(t){return {id:uid(),text:t,done:false};});
@@ -2363,17 +2389,173 @@ function renderDividend(){
   });
 }
 
+/* ===================== 云同步（JSONBin） =====================
+   设计原则（重要）：
+   1. 本机数据只在**用户点了确认**之后才会被云端覆盖，绝不静默替换；
+   2. 谁新谁赢靠 record 自带的 settings.syncedAt 判断，不依赖无法保证的云端元数据；
+   3. 上传遇错只提示，不影响本地继续使用。 */
+var SYNC={remoteNewer:false,remoteAt:null,busy:false};
+var _cloudTimer=null;
+function cloudCfg(){
+  var st=(S&&S.settings)||{};
+  return {k:(st.cloudKey||"").trim(), b:(st.cloudBin||"").trim()};
+}
+function paired(){ var c=cloudCfg(); return !!(c.k&&c.b); }
+function autoSyncOn(){ return paired() && S.settings.autoSync!==false; }
+/* JSONBin 的 Key / Bin ID 都是 ASCII（$2a$10$… 和 24 位十六进制），直接 btoa 足够，
+   不需要 escape/unescape 那套已废弃的写法。 */
+function b64enc(s){ try{ return btoa(s); }catch(e){ return ""; } }
+function b64dec(s){ try{ return atob(s); }catch(e){ return ""; } }
+function fmtSyncTime(iso){
+  if(!iso) return "未知时间";
+  var d=new Date(iso);
+  if(!isFinite(d.getTime())) return String(iso);
+  return d.toLocaleString("zh-CN",{hour12:false,month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"});
+}
+function scheduleCloudPush(){
+  if(!autoSyncOn()) return;
+  clearTimeout(_cloudTimer);
+  _cloudTimer=setTimeout(function(){ cloudPush({silent:true}); }, 12000);
+}
+function cloudPush(opt){
+  opt=opt||{};
+  var c=cloudCfg();
+  if(!c.k){ if(!opt.silent) toast("请先填 API Key"); return Promise.resolve(false); }
+  if(SYNC.busy) return Promise.resolve(false);
+  SYNC.busy=true;
+  var url="https://api.jsonbin.io/v3/b"+(c.b?"/"+c.b:"");
+  return fetch(url,{method:c.b?"PUT":"POST",
+      headers:{"Content-Type":"application/json","X-Master-Key":c.k},
+      body:JSON.stringify(S)})
+    .then(function(r){
+      return r.text().then(function(t){
+        var j=null; try{ j=t?JSON.parse(t):{}; }catch(e){ j={}; }
+        return {ok:r.ok,st:r.status,j:j||{}};
+      });
+    })
+    .then(function(res){
+      SYNC.busy=false;
+      var j=res.j;
+      if(!res.ok){
+        if(!opt.silent) toast("上传失败："+((j&&j.message)||("HTTP "+res.st)));
+        return false;
+      }
+      if(j&&j.metadata&&j.metadata.id) S.settings.cloudBin=j.metadata.id;
+      S.settings.syncedAt=new Date().toISOString();
+      S.settings.lastSync=new Date().toLocaleString("zh-CN",{hour12:false});
+      persist({noCloud:true});
+      renderSyncBar();
+      if(opt.onDone) opt.onDone(true,null);
+      if(!opt.silent) toast("已上传到云端");
+      return true;
+    })
+    .catch(function(e){
+      SYNC.busy=false;
+      if(!opt.silent) toast("上传失败："+e.message);
+      if(opt.onDone) opt.onDone(false,e.message);
+      return false;
+    });
+}
+function cloudPull(){
+  var c=cloudCfg();
+  if(!c.k||!c.b) return Promise.resolve(false);
+  SYNC.busy=true;
+  return fetch("https://api.jsonbin.io/v3/b/"+c.b+"/latest",
+      {headers:{"X-Master-Key":c.k},cache:"no-store"})
+    .then(function(r){ return r.text().then(function(t){
+      var j=null; try{ j=t?JSON.parse(t):{}; }catch(e){ j={}; } return {ok:r.ok,j:j||{}}; }); })
+    .then(function(res){
+      SYNC.busy=false;
+      var rec=res.j&&res.j.record;
+      if(!rec){ toast("云端没有数据"); return false; }
+      S=rec; normalizeState();
+      S.settings.cloudKey=c.k; S.settings.cloudBin=c.b;
+      S.settings.lastSync=new Date().toLocaleString("zh-CN",{hour12:false});
+      SYNC.remoteNewer=false;
+      persist({noCloud:true}); closeModal(); render(); renderSyncBar();
+      toast("已从云端同步");
+      return true;
+    })
+    .catch(function(e){ SYNC.busy=false; toast("同步失败："+e.message); return false; });
+}
+/* 启动时查一次云端是不是比本机新，是的话只挂提示条，绝不动本地数据 */
+function cloudProbe(){
+  var c=cloudCfg();
+  if(!c.k||!c.b||!autoSyncOn()) return;
+  fetch("https://api.jsonbin.io/v3/b/"+c.b+"/latest",
+      {headers:{"X-Master-Key":c.k},cache:"no-store"})
+    .then(function(r){ return r.text().then(function(t){
+      var j=null; try{ j=t?JSON.parse(t):{}; }catch(e){ j={}; } return j||{}; }); })
+    .then(function(j){
+      var rec=j.record;
+      if(!rec||!rec.settings) return;
+      var rt=rec.settings.syncedAt, lt=S.settings.syncedAt;
+      if(rt && (!lt || Date.parse(rt)>Date.parse(lt)+3000)){
+        SYNC.remoteNewer=true; SYNC.remoteAt=rt; renderSyncBar();
+      }
+    }).catch(function(){});
+}
+function renderSyncBar(){
+  var el=$("#syncBar"); if(!el) return;
+  if(!paired()||!SYNC.remoteNewer){ el.className="syncbar hide"; el.innerHTML=""; return; }
+  el.className="syncbar warn";
+  el.innerHTML='<span>云端有更新的数据（'+esc(fmtSyncTime(SYNC.remoteAt))+
+    '），要用它替换本机吗？</span><span class="sp"></span>'+
+    '<button class="b1" id="_sbPull">同步到本机</button>'+
+    '<button class="b2" id="_sbIg">忽略</button>';
+  $("#_sbPull").onclick=function(){
+    confirmBox("从云端同步？","会用云端那份数据<b>覆盖</b>本机全部内容，不可撤销。<br>本机上次同步："+
+      esc(fmtSyncTime(S.settings.syncedAt))+"<br>云端时间："+esc(fmtSyncTime(SYNC.remoteAt))+
+      "<br><br>不确定的话，先去设置里导出备份。",function(){ cloudPull(); });
+  };
+  $("#_sbIg").onclick=function(){ SYNC.remoteNewer=false; renderSyncBar(); };
+}
+/* 配对链接：把 Key + Bin 塞进 URL 的 # 里，另一端打开即配置好。
+   用 hash 是因为 hash 不会发给服务器，Key 不会出现在任何访问日志里。 */
+function pairLinkUrl(){
+  var c=cloudCfg();
+  if(!c.k){ return null; }
+  var base;
+  try{ base=location.origin+location.pathname; }catch(e){ base=""; }
+  if(!base||base==="null"||base.indexOf("http")!==0){
+    base="https://yysheng2026.github.io/invest-workbench/index.html";
+  }
+  return base+"#sync="+encodeURIComponent(b64enc(JSON.stringify({k:c.k,b:c.b})));
+}
+function parsePairHash(){
+  var h=""; try{ h=location.hash||""; }catch(e){}
+  var m=h.match(/[#&]sync=([^&]+)/);
+  if(!m) return false;
+  var cfg=null;
+  try{ cfg=JSON.parse(b64dec(decodeURIComponent(m[1]))); }catch(e){ cfg=null; }
+  if(!cfg||!cfg.k){ toast("配对链接无效"); return false; }
+  S.settings.cloudKey=cfg.k;
+  if(cfg.b) S.settings.cloudBin=cfg.b;
+  S.settings.autoSync=true;
+  persist({noCloud:true});
+  try{ history.replaceState(null,"",location.pathname+location.search); }
+  catch(e){ try{ location.hash=""; }catch(e2){} }
+  return true;
+}
+
 /* ===================== 设置 / 云同步 ===================== */
 function openSettings(){
   var st=S.settings;
   openModal("设置",
-    '<h3 class="sec-title">云同步（JSONBin）</h3>'+
-    '<div class="mut" style="margin-bottom:10px">填同一个 Key + Bin，多台设备就能看到同一份数据。'+
-    'Key 在 jsonbin.io 免费申请。</div>'+
-    '<div class="frow f2"><div><label class="fl">API Key</label><input type="password" id="_ck" value="'+esc(st.cloudKey||"")+'"></div>'+
+    '<h3 class="sec-title">多设备同步</h3>'+
+    '<div class="mut" style="margin-bottom:10px">电脑和手机是两套独立的本地存储，不会自动一样。'+
+    '填一组 Key + Bin、打开<b>自动同步</b>后：本机改动会自动上传；另一端启动时若云端更新，'+
+    '顶部会出现橙色提示条，你点一下才会覆盖。<b>本机数据永远不会被静默替换。</b></div>'+
+    '<div class="frow f2"><div><label class="fl">API Key</label>'+
+    '<input type="password" id="_ck" value="'+esc(st.cloudKey||"")+'" placeholder="jsonbin.io 免费申请"></div>'+
     '<div><label class="fl">Bin ID</label><input type="text" id="_cb" value="'+esc(st.cloudBin||"")+'" placeholder="留空则新建"></div></div>'+
-    '<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn gh sm" id="_push">上传到云端</button>'+
+    '<label style="display:flex;align-items:center;gap:9px;font-size:14px;cursor:pointer;margin-top:4px">'+
+    '<input type="checkbox" id="_cauto" '+(st.autoSync?"checked":"")+' style="width:17px;height:17px"> '+
+    '自动同步（本机改动自动上传，云端有更新时提醒我）</label>'+
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">'+
+    '<button class="btn gh sm" id="_push">上传到云端</button>'+
     '<button class="btn gy sm" id="_pull">从云端恢复</button>'+
+    '<button class="btn gy sm" id="_pair">生成配对链接</button>'+
     '<span class="mut" style="align-self:center">'+(st.lastSync?"上次同步 "+esc(st.lastSync):"尚未同步")+'</span></div>'+
     '<div class="hr"></div>'+
     '<h3 class="sec-title">数据</h3>'+
@@ -2397,31 +2579,63 @@ function openSettings(){
     '每次打开自动记录当日总资产</label>'+
     '<div class="mut" style="margin-top:8px">选股数据请双击同目录的「刷新选股数据.bat」更新，财报一个季度变一次，无需频繁刷新。</div>',
     '<button class="btn" data-close>完成</button>');
+  function saveCloudFields(){
+    S.settings.cloudKey=$("#_ck").value.trim();
+    S.settings.cloudBin=$("#_cb").value.trim();
+    persist({noCloud:true});
+  }
+  $("#_ck").onchange=saveCloudFields;
+  $("#_cb").onchange=saveCloudFields;
+  $("#_cauto").onchange=function(){
+    saveCloudFields();
+    S.settings.autoSync=$("#_cauto").checked;
+    persist({noCloud:true});
+    if(S.settings.autoSync&&paired()) cloudProbe();
+  };
   $("#_push").onclick=function(){
-    var k=$("#_ck").value.trim(), b=$("#_cb").value.trim();
-    if(!k){ toast("请先填 API Key"); return; }
-    S.settings.cloudKey=k; S.settings.cloudBin=b; save();
-    var url="https://api.jsonbin.io/v3/b"+(b?"/"+b:"");
-    var req={method:b?"PUT":"POST",headers:{"Content-Type":"application/json","X-Master-Key":k},body:JSON.stringify(S)};
+    saveCloudFields();
+    if(!cloudCfg().k){ toast("请先填 API Key"); return; }
     $("#_push").disabled=true; $("#_push").textContent="上传中…";
-    fetch(url,req).then(function(r){return r.json();}).then(function(j){
-      if(j&&j.metadata&&j.metadata.id){ S.settings.cloudBin=j.metadata.id; }
-      S.settings.lastSync=new Date().toLocaleString("zh-CN",{hour12:false}); save();
-      toast("已上传"+(b?"":"，Bin ID 已自动填入")); closeModal(); openSettings();
-    }).catch(function(e){ toast("上传失败："+e.message); $("#_push").disabled=false; $("#_push").textContent="上传到云端"; });
+    cloudPush({}).then(function(ok){
+      $("#_push").disabled=false; $("#_push").textContent="上传到云端";
+      if(ok){ closeModal(); openSettings(); }
+    });
   };
   $("#_pull").onclick=function(){
-    var k=$("#_ck").value.trim(), b=$("#_cb").value.trim();
-    if(!k||!b){ toast("需要同时填 Key 和 Bin ID"); return; }
-    confirmBox("从云端恢复？","会用云端的数据<b>覆盖</b>这台设备上的全部内容，且不可撤销。建议先导出备份。",function(){
-      fetch("https://api.jsonbin.io/v3/b/"+b+"/latest",{headers:{"X-Master-Key":k}})
-      .then(function(r){return r.json();}).then(function(j){
-        if(j&&j.record){
-          S=j.record; S.settings.cloudKey=k; S.settings.cloudBin=b; save();
-          toast("已从云端恢复"); closeModal(); render();
-        } else toast("云端没有数据");
-      }).catch(function(e){ toast("恢复失败："+e.message); });
-    });
+    saveCloudFields();
+    var c=cloudCfg();
+    if(!c.k||!c.b){ toast("需要同时填 Key 和 Bin ID"); return; }
+    confirmBox("从云端恢复？","会用云端的数据<b>覆盖</b>这台设备上的全部内容，且不可撤销。<br>建议先导出备份。",
+      function(){ cloudPull(); });
+  };
+  $("#_pair").onclick=function(){
+    saveCloudFields();
+    if(!cloudCfg().k){ toast("请先填 API Key"); return; }
+    if(!cloudCfg().b){
+      confirmBox("还没有云端数据","生成配对链接需要先上传一次。<br>确定后我先上传并自动创建 Bin。",function(){
+        cloudPush({silent:true}).then(function(ok){
+          if(ok){ closeModal(); openSettings(); toast("已创建 Bin，再点一次生成配对链接"); }
+          else closeModal();
+        });
+      });
+      return;
+    }
+    var link=pairLinkUrl();
+    openModal("配对链接",
+      '<div class="mut" style="font-size:13.5px;line-height:1.7">把这条链接用微信<b>发给自己</b>，'+
+      '在另一台设备上打开（建议用浏览器打开后再加到主屏），那边会自动填好 Key 和 Bin 并开启自动同步。</div>'+
+      '<div class="pairtxt" id="_pairTxt">'+esc(link)+'</div>'+
+      '<div class="mut" style="margin-top:8px;font-size:12.5px;color:var(--warn)">链接里含你的 API Key，只发给自己，别发到群里。</div>',
+      '<button class="btn gy" data-close>关闭</button><button class="btn" id="_pcp">复制链接</button>');
+    $("#_pcp").onclick=function(){
+      var ta=document.createElement("textarea");
+      ta.value=($("#_pairTxt")||{}).textContent||link;
+      ta.style.position="fixed"; ta.style.opacity="0";
+      document.body.appendChild(ta); ta.select();
+      var ok=false; try{ ok=document.execCommand("copy"); }catch(e){}
+      document.body.removeChild(ta);
+      toast(ok?"已复制，发给自己即可":"复制失败，请长按选中链接");
+    };
   };
   $("#_exp").onclick=function(){
     var blob=new Blob([JSON.stringify(S,null,2)],{type:"application/json"});
@@ -2546,12 +2760,29 @@ function boot(){
   startAuto();
   /* 桌面版：先从 data\save.json 读回来（若文件里比 localStorage 新），再渲染
      并把 localStorage 里的内容写进文件（文件缺失时做首次落盘）。
-     探测失败（file:// 或线上）会立刻回调，不影响网页版启动。 */
+     探测失败（file:// 或线上）会立刻回调，不影响网页版启动。
+     ⚠️ 云同步必须排在 loadFromDesktop 之后，否则桌面版的文件会盖掉刚拉下来的云端数据。 */
   loadFromDesktop(function(){
     if(DESKTOP.ok) ensureDesktopFile();
+    afterLoad();
     refreshAllQuotes(function(){ upsertSnap(); render(); });
     render();
   });
+}
+function afterLoad(){
+  normalizeState();
+  renderSyncBar();
+  /* 从配对链接进来：先把 Key / Bin 写进去，再决定要不要拉数据 */
+  if(parsePairHash()){
+    if(paired()){
+      toast("已配对成功");
+      cloudProbe();
+    } else {
+      toast("Key 已保存，点「上传到云端」开始同步");
+    }
+    return;
+  }
+  cloudProbe();
 }
 /* 首次跑桌面版时，把浏览器里已有的数据落一份到文件，避免"看起来像被清空" */
 function ensureDesktopFile(){
@@ -2568,7 +2799,7 @@ document.addEventListener("DOMContentLoaded",boot);
    带版本号的 URL 可绕开浏览器对同一 SW 脚本 24 小时的更新节流。 */
 if("serviceWorker" in navigator && location.protocol!=="file:"){
   window.addEventListener("load",function(){
-    navigator.serviceWorker.register("./sw.js?v=1").then(function(reg){
+    navigator.serviceWorker.register("./sw.js?v=2").then(function(reg){
       reg.update&&reg.update();
     }).catch(function(){});
   });
@@ -2583,7 +2814,9 @@ if("serviceWorker" in navigator){
 /* 供控制台自检使用 */
 window.__WB__={get S(){return S;},render:render,go:go,xirr:xirr,twr:twr,metrics:metrics,
   marketTemp:marketTemp,screenStocks:screenStocks,demo:demoState,
-  parseHoldingsText:parseHoldingsText,realizedPnl:realizedPnl,tcode:tcode};
+  parseHoldingsText:parseHoldingsText,realizedPnl:realizedPnl,tcode:tcode,
+  paired:paired,cloudCfg:cloudCfg,pairLinkUrl:pairLinkUrl,parsePairHash:parsePairHash,
+  renderSyncBar:renderSyncBar,persist:persist,getSync:function(){return SYNC;}};
 </script>
 </body>
 </html>
