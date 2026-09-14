@@ -2901,7 +2901,7 @@ document.addEventListener("DOMContentLoaded",boot);
    带版本号的 URL 可绕开浏览器对同一 SW 脚本 24 小时的更新节流。 */
 if("serviceWorker" in navigator && location.protocol!=="file:"){
   window.addEventListener("load",function(){
-    navigator.serviceWorker.register("./sw.js?v=3").then(function(reg){
+    navigator.serviceWorker.register("./sw.js?v=4").then(function(reg){
       reg.update&&reg.update();
     }).catch(function(){});
   });
