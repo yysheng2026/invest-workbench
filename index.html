@@ -1215,7 +1215,11 @@ function openSellNew(){
       '<input type="number" step="0.001" id="_sc2" placeholder="留空则不计盈亏"></div>'+
     '<div><label class="fl">卖出理由（选填）</label><input type="text" id="_sr2" placeholder="为什么卖"></div></div>'+
     '<div style="margin-top:12px"><label style="display:flex;align-items:center;gap:8px;font-size:13.5px;cursor:pointer">'+
-    '<input type="checkbox" id="_spay2" checked style="width:17px;height:17px"> <span id="_spaytx">卖出款回到现金余额</span></label></div>',
+    '<input type="checkbox" id="_spay2" checked style="width:17px;height:17px"> <span id="_spaytx">卖出款回到现金余额</span></label></div>'+
+    '<div style="margin-top:9px"><label style="display:flex;align-items:flex-start;gap:8px;font-size:13.5px;cursor:pointer">'+
+    '<input type="checkbox" id="_ssnap" style="width:17px;height:17px;margin-top:2px"> '+
+    '<span>这笔已经算在持仓快照里了 —— <b>只记盈亏，不再扣减持仓、也不回款到现金</b>'+
+    '<br><span class="mut sm">券商导出的持仓本来就是卖后数量、可用现金也已含回款时，勾这个</span></span></label></div>',
     '<button class="btn gy" data-close>取消</button><button class="btn" id="_ok">确认卖出</button>');
 
   var hint=$("#_shint"), lb=$("#_spaytx");
@@ -1255,18 +1259,28 @@ function openSellNew(){
     var reason=String($("#_sr2").value||"").trim();
     var name=String($("#_sn").value||"").trim();
     var toCash=$("#_spay2").checked;
+    var snap=!!($("#_ssnap")&&$("#_ssnap").checked);
     var x=S.holdings.filter(function(v){return v.code===code;})[0];
     var realized=null;
 
     if(x){                                           // 已有持仓：减仓 / 清仓
-      sh=Math.min(sh,toNum(x.shares));
-      var cost=toNum(x.cost), left=toNum(x.shares)-sh;
-      realized=(price-cost)*sh;
-      if(toCash) S.account.cash=toNum(S.account.cash)+price*sh;
-      x.shares=left;
-      if(left<=0.0001) S.holdings=S.holdings.filter(function(v){return v.id!==x.id;});
-      S.trades.push({id:uid(),code:code,name:x.name||name||code,cost:cost,
-        sellPrice:price,shares:sh,date:date,reason:reason,mode:(left>0?"减仓":"清仓")});
+      var cost=toNum(x.cost);
+      if(snap){
+        /* 快照已含：持仓清单本来就是卖出后的数量、现金也已含回款 → 只记一笔盈亏，
+           绝不能再扣第二次股数（否则 1000 股会错变成 800 股）。 */
+        realized=(price-cost)*sh;
+        S.trades.push({id:uid(),code:code,name:x.name||name||code,cost:cost,
+          sellPrice:price,shares:sh,date:date,reason:reason,mode:"快照已含"});
+      }else{
+        sh=Math.min(sh,toNum(x.shares));
+        var left=toNum(x.shares)-sh;
+        realized=(price-cost)*sh;
+        if(toCash) S.account.cash=toNum(S.account.cash)+price*sh;
+        x.shares=left;
+        if(left<=0.0001) S.holdings=S.holdings.filter(function(v){return v.id!==x.id;});
+        S.trades.push({id:uid(),code:code,name:x.name||name||code,cost:cost,
+          sellPrice:price,shares:sh,date:date,reason:reason,mode:(left>0?"减仓":"清仓")});
+      }
     }else{                                           // 补录：账户里原本就有
       var cs=String($("#_sc2").value||"").trim();
       var cost2=(cs===""?null:toNum(cs));
@@ -1275,9 +1289,10 @@ function openSellNew(){
       S.trades.push({id:uid(),code:code,name:name||code,cost:cost2,
         sellPrice:price,shares:sh,date:date,reason:reason,mode:"补录"});
     }
+    var snapNote=snap?"\n（快照已含：持仓股数与现金均未做调整，只记这笔盈亏）":"";
     S.logs.unshift({id:uid(),date:date,title:((x?"卖出":"卖出（补录）")+" "+(name||(x&&x.name)||code)),mood:"",
       content:(reason?reason+"\n":"")+"卖出价 "+fmt(price,3)+"，数量 "+fmt(sh,0)+" 股。已实现盈亏 "+
-        (realized==null?"—（成本未填，不计盈亏）":((realized>=0?"+":"")+money(realized).replace("¥-","-¥")))+"。",
+        (realized==null?"—（成本未填，不计盈亏）":((realized>=0?"+":"")+money(realized).replace("¥-","-¥")))+"。"+snapNote,
       tags:["卖出"],code:code});
     save(); closeModal(); upsertSnap(); render();
     toast(realized==null?"已补录卖出（未计盈亏）":("已记录卖出，盈亏 "+(realized>=0?"+":"")+money(realized)));
@@ -1774,24 +1789,37 @@ function renderHold(){
         '<div><label class="fl">卖出数量</label><input type="number" step="100" id="_ss" value="'+fmt(toNum(x.shares),0)+'"></div></div>'+
         '<div><label class="fl">卖出理由</label><input type="text" id="_sr" placeholder="为什么卖（写下来，将来复盘用）"></div>'+
         '<div style="margin-top:12px"><label style="display:flex;align-items:center;gap:8px;font-size:13.5px;cursor:pointer">'+
-        '<input type="checkbox" id="_spay" checked style="width:17px;height:17px"> 卖出款回到现金余额</label></div>',
+        '<input type="checkbox" id="_spay" checked style="width:17px;height:17px"> 卖出款回到现金余额</label></div>'+
+        '<div style="margin-top:9px"><label style="display:flex;align-items:flex-start;gap:8px;font-size:13.5px;cursor:pointer">'+
+        '<input type="checkbox" id="_ssnap2" style="width:17px;height:17px;margin-top:2px"> '+
+        '<span>这笔已经算在持仓快照里了 —— <b>只记盈亏，不再扣减持仓、也不回款到现金</b>'+
+        '<br><span class="mut sm">这份持仓数据本来就是卖后数量时勾这个，避免重复扣股</span></span></label></div>',
         '<button class="btn gy" data-close>取消</button><button class="btn" id="_ok">确认卖出</button>');
       $("#_ok").onclick=function(){
         var price=toNum($("#_sp").value), sh=toNum($("#_ss").value);
         if(price<=0||sh<=0){ toast("请输入卖出价和数量"); return; }
         sh=Math.min(sh,toNum(x.shares));
         var realized=(price-toNum(x.cost))*sh;
-        if($("#_spay").checked) S.account.cash=toNum(S.account.cash)+price*sh;
-        x.shares=toNum(x.shares)-sh;
-        var left=x.shares;
-        if(left<=0.0001) S.holdings=S.holdings.filter(function(v){return v.id!==id;});
+        var snap=!!($("#_ssnap2")&&$("#_ssnap2").checked);
+        var left,mode;
+        if(snap){
+          /* 快照已含：这份持仓数量本来就是卖出之后的结果，只补记盈亏，不扣股、不回现金 */
+          left=toNum(x.shares); mode="快照已含";
+        }else{
+          if($("#_spay").checked) S.account.cash=toNum(S.account.cash)+price*sh;
+          x.shares=toNum(x.shares)-sh;
+          left=x.shares;
+          if(left<=0.0001) S.holdings=S.holdings.filter(function(v){return v.id!==id;});
+          mode=(left>0?"减仓":"清仓");
+        }
         S.trades.push({id:uid(),code:x.code,name:x.name||x.code,cost:toNum(x.cost),
-          sellPrice:price,shares:sh,date:todayStr(),reason:$("#_sr").value.trim(),
-          mode:(left>0?"减仓":"清仓")});
+          sellPrice:price,shares:sh,date:todayStr(),reason:$("#_sr").value.trim(),mode:mode});
         var reason=$("#_sr").value.trim();
-        S.logs.unshift({id:uid(),date:todayStr(),title:(left>0?"减仓 ":"清仓 ")+(x.name||x.code),mood:"",
+        S.logs.unshift({id:uid(),date:todayStr(),
+          title:(mode==="快照已含"?"补记卖出 ":left>0?"减仓 ":"清仓 ")+(x.name||x.code),mood:"",
           content:(reason?reason+"\n":"")+"卖出价 "+fmt(price,3)+"，数量 "+fmt(sh,0)+" 股。本次实现盈亏 "+
-          (realized>=0?"+":"")+money(realized)+"（"+pct(toNum(x.cost)>0?realized/(toNum(x.cost)*sh)*100:0)+"）。",
+          (realized>=0?"+":"")+money(realized)+"（"+pct(toNum(x.cost)>0?realized/(toNum(x.cost)*sh)*100:0)+"）。"+
+          (snap?"\n（该笔成交已含在持仓快照中，未再扣减持仓、也未回款到现金）":""),
           tags:["卖出",x.code],code:x.code});
         save(); closeModal(); upsertSnap(); render();
         toast("已记录卖出，盈亏 "+(realized>=0?"+":"")+money(realized));
