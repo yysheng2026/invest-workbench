@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#2C5BE6">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="投资实证">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="apple-touch-icon" href="./apple-touch-icon.png">
+<title>投资实证 · 安装 / 入口</title>
+<style>
+  :root{
+    --bg:#F4F6FA; --card:#FFFFFF; --ink:#172033; --ink2:#4A5670; --ink3:#8B96AC;
+    --brand:#2C5BE6; --brand-soft:#EDF2FE; --line:#E4E9F2; --up:#E13C3C;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#0F1420; --card:#171E2E; --ink:#EAF0FA; --ink2:#B7C2D6; --ink3:#7E8AA1;
+           --brand:#6C8CFF; --brand-soft:#1D2740; --line:#28324A; }
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    padding:28px 18px 56px;max-width:720px;margin:0 auto}
+  h1{font-size:23px;margin:0 0 6px;letter-spacing:-.3px}
+  .sub{color:var(--ink3);font-size:13.5px;margin-bottom:22px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:18px 18px 16px;margin-bottom:14px}
+  .card h2{font-size:16px;margin:0 0 4px;display:flex;align-items:center;gap:8px}
+  .card h2 .badge{font-size:11px;font-weight:600;background:var(--brand-soft);color:var(--brand);
+    padding:2px 8px;border-radius:20px;letter-spacing:0}
+  .card p{margin:8px 0 0;color:var(--ink2);font-size:14px}
+  ol{margin:10px 0 0;padding-left:22px;color:var(--ink2);font-size:14px}
+  ol li{margin:5px 0}
+  b{color:var(--ink)}
+  code{background:var(--brand-soft);color:var(--brand);padding:1px 6px;border-radius:5px;
+    font-size:13px;font-family:ui-monospace,Consolas,monospace}
+  a.go{display:block;text-align:center;background:var(--brand);color:#fff;text-decoration:none;
+    font-weight:600;font-size:16px;padding:15px;border-radius:12px;margin-top:16px}
+  a.go.gh{background:transparent;color:var(--brand);border:1px solid var(--brand)}
+  .warn{background:#FFF8E6;border:1px solid #F0DDB0;color:#7A5A12;border-radius:10px;
+    padding:11px 13px;font-size:13.5px;line-height:1.7;margin-top:12px}
+  @media (prefers-color-scheme: dark){
+    .warn{background:#2A2410;border-color:#4A3D18;color:#E8CE86}
+  }
+  .steps{margin-top:12px;border-top:1px solid var(--line);padding-top:12px}
+  .steps:first-of-type{border-top:0;padding-top:0}
+  .k{color:var(--ink3);font-size:12.5px;letter-spacing:.3px;text-transform:uppercase;
+    margin-bottom:4px;font-weight:600}
+  .foot{color:var(--ink3);font-size:12.5px;text-align:center;margin-top:24px;line-height:1.9}
+</style>
+</head>
+<body>
+
+<h1>投资实证工作台</h1>
+<div class="sub">记账 · 持仓 · 净值 · 选股 · 日志<br>数据全部存在你自己的设备上，不上传任何服务器</div>
+
+<a class="go" href="./index.html">直接打开工作台 →</a>
+
+<!-- ========== 手机 ========== -->
+<div class="card">
+  <h2>手机 · 装成 APP <span class="badge">推荐</span></h2>
+  <p>用手机浏览器打开本页，按下面步骤加到主屏。之后点主屏图标就能像 App 一样全屏打开，
+     <b>断网也能用</b>（数据在手机本地）。</p>
+
+  <div class="steps">
+    <div class="k">iPhone / iPad（Safari）</div>
+    <ol>
+      <li>点底部中间的 <b>分享</b> 按钮（方框＋向上箭头）</li>
+      <li>往下找到 <b>「添加到主屏幕」</b>，点它</li>
+      <li>右上角点 <b>添加</b></li>
+    </ol>
+  </div>
+
+  <div class="steps">
+    <div class="k">Android（Chrome / Edge / 华为 / 小米浏览器）</div>
+    <ol>
+      <li>点右上角 <b>⋮</b> 菜单</li>
+      <li>选 <b>「添加到主屏幕」</b> 或 <b>「安装应用」</b></li>
+      <li>确认即可</li>
+    </ol>
+  </div>
+
+  <div class="warn">
+    ⚠️ 用<b>微信内置浏览器</b>打开的话，右上角菜单里没有「添加到主屏幕」。
+    请点右上角 <b>⋯ → 在浏览器打开</b>，再用系统浏览器加到主屏。
+  </div>
+</div>
+
+<!-- ========== 电脑 ========== -->
+<div class="card">
+  <h2>电脑 · 加到桌面 / 任务栏 <span class="badge">离线可用</span></h2>
+  <p>电脑上<b>不用装任何东西</b>，用浏览器（Edge 或 Chrome）打开本页就行：</p>
+  <ol>
+    <li>Edge：右上角 <b>⋯ → 应用 → 将此站点作为应用安装</b></li>
+    <li>Chrome：右上角 <b>⋮ → 投放、保存和共享 → 将网页作为应用安装</b></li>
+    <li>装完会有独立图标，可固定到任务栏 / 桌面，打开没有地址栏，<b>断网也能用</b></li>
+  </ol>
+  <p style="margin-top:12px">另外网页版本身就有离线缓存，只要打开过一次，之后没网也能进。</p>
+</div>
+
+<div class="card">
+  <h2>电脑 · 本地文件版（可选） <span class="badge">自动备份</span></h2>
+  <p>想要「数据存成电脑上的一个真实文件」而不是浏览器里时，才用这个。
+     数据写在 <code>投资实证工作台\data\save.json</code>，每天自动留一份备份。</p>
+  <ol>
+    <li>在 <b>OneDrive\【我的工作台】\投资实证工作台</b> 这个文件夹里
+        （注意不是 Windows 桌面），找到 <b>投资实证工作台.bat</b></li>
+    <li>双击它，会弹出独立窗口</li>
+    <li>也可以用右键 → 发送到 → 桌面快捷方式，以后从桌面进</li>
+  </ol>
+  <div class="warn">
+    ⚠️ 这一步<b>不是必须的</b>。日常用网页版就够了，只是网页版的数据存在浏览器里，
+    清理浏览器数据会丢 —— 记得定期在「设置」里导出备份或开云同步。
+  </div>
+</div>
+
+<!-- ========== 多设备同步 ========== -->
+<div class="card">
+  <h2>多设备同步 <span class="badge">可选</span></h2>
+  <p>想在手机和电脑之间同步同一份数据，在<b>设置</b>里填一组
+     <code>JSONBin</code> 的 API Key + Bin ID（两边填一样的），就能手动上传/恢复。
+     不需要同步也可以各用各的。</p>
+  <div class="warn">
+    ⚠️ 电脑和手机的本地数据是<b>各存一份</b>的。换设备前先在设置里
+    「导出备份」或「上传到云端」，不然新设备上是空的。
+  </div>
+</div>
+
+<div class="foot">
+  数据只存在你的设备上 · 行情来自腾讯公开接口<br>
+  不预测，只应对 —— 未来无人知晓
+</div>
+
+</body>
+</html>

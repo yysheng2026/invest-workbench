@@ -1,0 +1,20 @@
+{
+  "name": "投资实证工作台",
+  "short_name": "投资实证",
+  "description": "记录投资过程：规划 · 资产 · 持仓 · 选股 · 日志 · 温度 · 股息。数据存在本机，离线可用。",
+  "start_url": "./index.html",
+  "scope": "./",
+  "id": "./",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "portrait",
+  "background_color": "#F4F6FA",
+  "theme_color": "#2C5BE6",
+  "lang": "zh-CN",
+  "categories": ["finance", "productivity"],
+  "icons": [
+    { "src": "./icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "./icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "./apple-touch-icon.png", "sizes": "180x180", "type": "image/png" }
+  ]
+}
