@@ -2550,10 +2550,45 @@ function pairLinkUrl(){
   }
   return base+"#sync="+encodeURIComponent(b64enc(JSON.stringify({k:c.k,b:c.b})));
 }
+/* 从 URL 的 #sync= 里解出 Key / Bin。
+   ⚠️ 这里【故意不清掉地址栏的 hash】——
+   iPhone 的「分享 → 添加到主屏幕」是把当时的 URL 原样存成快捷方式，
+   而主屏幕 App 用的是独立存储（和 Safari 不共享 localStorage），
+   只有把这段口令留在 URL 里，主屏 App 第一次打开才会重新自动配对。
+   想去掉的话去设置里点「清掉地址栏里的配对口令」。 */
+function hasPairHash(){
+  try{ return /[#&]sync=[^&]+/.test(location.hash||""); }catch(e){ return false; }
+}
+function clearPairHash(){
+  try{ history.replaceState(null,"",location.pathname+(location.search||"")); }
+  catch(e){ try{ location.hash=""; }catch(e2){} }
+}
+/* 本机是不是一台「全新的空设备」——是的话从云端拉数据不需要二次确认
+   （本地本来就没东西可覆盖，确认弹窗纯属多余）。 */
+function localIsEmpty(){
+  return !(S.holdings&&S.holdings.length) &&
+         !(S.trades&&S.trades.length) &&
+         !(S.logs&&S.logs.length);
+}
+/* 把「整条配对链接」或「#sync= 后面那段码」写进本机配置。
+   这是主屏幕 App / 换了新浏览器之后重新配对的兜底入口。 */
+function applyPairCode(txt){
+  txt=String(txt||"").trim();
+  if(!txt) return false;
+  var m=txt.match(/[#&]sync=([^&\s]+)/);
+  var code=m?m[1]:txt;
+  var cfg=null;
+  try{ cfg=JSON.parse(b64dec(decodeURIComponent(code))); }catch(e){ cfg=null; }
+  if(!cfg||!cfg.k) return false;
+  S.settings.cloudKey=cfg.k;
+  if(cfg.b) S.settings.cloudBin=cfg.b;
+  S.settings.autoSync=true;
+  persist({noCloud:true});
+  return true;
+}
 function parsePairHash(){
-  var h=""; try{ h=location.hash||""; }catch(e){}
-  var m=h.match(/[#&]sync=([^&]+)/);
-  if(!m) return false;
+  if(!hasPairHash()) return false;
+  var m=(location.hash||"").match(/[#&]sync=([^&]+)/);
   var cfg=null;
   try{ cfg=JSON.parse(b64dec(decodeURIComponent(m[1]))); }catch(e){ cfg=null; }
   if(!cfg||!cfg.k){ toast("配对链接无效"); return false; }
@@ -2561,8 +2596,6 @@ function parsePairHash(){
   if(cfg.b) S.settings.cloudBin=cfg.b;
   S.settings.autoSync=true;
   persist({noCloud:true});
-  try{ history.replaceState(null,"",location.pathname+location.search); }
-  catch(e){ try{ location.hash=""; }catch(e2){} }
   return true;
 }
 
@@ -2585,6 +2618,21 @@ function openSettings(){
     '<button class="btn gy sm" id="_pull">从云端恢复</button>'+
     '<button class="btn gy sm" id="_pair">生成配对链接</button>'+
     '<span class="mut" style="align-self:center">'+(st.lastSync?"上次同步 "+esc(st.lastSync):"尚未同步")+'</span></div>'+
+    (hasPairHash()
+      ? '<div class="mut" style="margin-top:8px;font-size:12.5px;color:var(--warn);line-height:1.7">'+
+        '当前地址栏还带着 <code>#sync=…</code> 配对口令 —— 这是<b>故意留着</b>的：'+
+        'iPhone「分享 → 添加到主屏幕」会把整条 URL 存成快捷方式，留着它，'+
+        '主屏 App 第一次打开才会自动配对。配对完成后可以 '+
+        '<a href="javascript:void(0)" id="_clrHash" style="color:var(--brand)">点此清掉</a>。</div>'
+      : '')+
+    '<div style="margin-top:12px"><label class="fl">粘贴配对码</label>'+
+    '<div style="display:flex;gap:8px;flex-wrap:wrap">'+
+    '<input type="text" id="_pcode" placeholder="整条配对链接，或 #sync= 后面那段码" '+
+      'style="flex:1;min-width:210px">'+
+    '<button class="btn gh sm" id="_papp">应用配对</button></div>'+
+    '<div class="mut" style="margin-top:6px;font-size:12.5px;line-height:1.7">'+
+    '📱 iPhone 加到<b>主屏幕</b>后是<b>独立存储空间</b>，跟 Safari 不共用数据 —— '+
+    '所以主屏 App 打开还是空的，就在这里粘一次配对码（不需要再联网验证）。</div></div>'+
     '<div class="hr"></div>'+
     '<h3 class="sec-title">数据</h3>'+
     '<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn gy sm" id="_exp">导出备份</button>'+
@@ -2636,6 +2684,21 @@ function openSettings(){
     confirmBox("从云端恢复？","会用云端的数据<b>覆盖</b>这台设备上的全部内容，且不可撤销。<br>建议先导出备份。",
       function(){ cloudPull(); });
   };
+  $("#_papp").onclick=function(){
+    var v=$("#_pcode").value;
+    if(!applyPairCode(v)){ toast("这段配对码读不出来，粘整条链接试试"); return; }
+    closeModal();
+    if(paired()&&S.settings.cloudBin){
+      if(localIsEmpty()){ toast("配对成功，正在取回云端数据…"); cloudPull(); }
+      else { toast("配对成功"); cloudProbe(); openSettings(); }
+    }else{
+      openSettings(); toast("Key 已保存，点「上传到云端」开始同步");
+    }
+  };
+  var ch=$("#_clrHash");
+  if(ch) ch.onclick=function(){
+    clearPairHash(); toast("已清掉地址栏里的配对口令"); closeModal(); openSettings();
+  };
   $("#_pair").onclick=function(){
     saveCloudFields();
     if(!cloudCfg().k){ toast("请先填 API Key"); return; }
@@ -2650,8 +2713,13 @@ function openSettings(){
     }
     var link=pairLinkUrl();
     openModal("配对链接",
-      '<div class="mut" style="font-size:13.5px;line-height:1.7">把这条链接用微信<b>发给自己</b>，'+
-      '在另一台设备上打开（建议用浏览器打开后再加到主屏），那边会自动填好 Key 和 Bin 并开启自动同步。</div>'+
+      '<div class="mut" style="font-size:13.5px;line-height:1.8">用微信<b>发给自己</b>，'+
+      '在另一台设备上按这个顺序做：<br>'+
+      '① 用<b>浏览器</b>打开这条链接 → 看到「已配对」<br>'+
+      '② 点<b>分享 → 添加到主屏幕</b>（地址栏那段 <code>#sync=</code> 会一起带上，'+
+      '主屏 App 首次打开会自动配对）<br>'+
+      '③ 主屏 App 打开若还是空的（个别机型是指独立存储），'+
+      '进<b>设置 → 粘贴配对码</b>再贴一次这条链接即可。</div>'+
       '<div class="pairtxt" id="_pairTxt">'+esc(link)+'</div>'+
       '<div class="mut" style="margin-top:8px;font-size:12.5px;color:var(--warn)">链接里含你的 API Key，只发给自己，别发到群里。</div>',
       '<button class="btn gy" data-close>关闭</button><button class="btn" id="_pcp">复制链接</button>');
@@ -2803,8 +2871,14 @@ function afterLoad(){
   /* 从配对链接进来：先把 Key / Bin 写进去，再决定要不要拉数据 */
   if(parsePairHash()){
     if(paired()){
-      toast("已配对成功");
-      cloudProbe();
+      if(S.settings.cloudBin && localIsEmpty()){
+        /* 这台设备本来就是空的，云端数据不可能「覆盖」掉任何东西 → 直接拉 */
+        toast("已配对，正在取回云端数据…");
+        cloudPull();
+      }else{
+        toast("已配对成功");
+        cloudProbe();
+      }
     } else {
       toast("Key 已保存，点「上传到云端」开始同步");
     }
@@ -2827,7 +2901,7 @@ document.addEventListener("DOMContentLoaded",boot);
    带版本号的 URL 可绕开浏览器对同一 SW 脚本 24 小时的更新节流。 */
 if("serviceWorker" in navigator && location.protocol!=="file:"){
   window.addEventListener("load",function(){
-    navigator.serviceWorker.register("./sw.js?v=2").then(function(reg){
+    navigator.serviceWorker.register("./sw.js?v=3").then(function(reg){
       reg.update&&reg.update();
     }).catch(function(){});
   });
@@ -2844,6 +2918,8 @@ window.__WB__={get S(){return S;},render:render,go:go,xirr:xirr,twr:twr,metrics:
   marketTemp:marketTemp,screenStocks:screenStocks,demo:demoState,
   parseHoldingsText:parseHoldingsText,realizedPnl:realizedPnl,tcode:tcode,
   paired:paired,cloudCfg:cloudCfg,pairLinkUrl:pairLinkUrl,parsePairHash:parsePairHash,
+  applyPairCode:applyPairCode,hasPairHash:hasPairHash,clearPairHash:clearPairHash,
+  localIsEmpty:localIsEmpty,cloudPull:cloudPull,cloudProbe:cloudProbe,cloudPush:cloudPush,
   renderSyncBar:renderSyncBar,persist:persist,getSync:function(){return SYNC;}};
 </script>
 </body>
