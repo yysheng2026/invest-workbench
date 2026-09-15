@@ -62,6 +62,10 @@ if %errorlevel%==0 (
 popd
 
 echo.
+echo  [4/4] 重建本地远端分支引用（避免 GitHub Desktop 显示 gone）...
+"%PY%" "%SRC%ix_remote_ref.py"
+
+echo.
 echo  完成。线上地址： https://invest-workbench.pages.dev/
 echo  （手机上若还是旧版，删掉主屏图标重装一次即可）
 echo.
