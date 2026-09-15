@@ -243,6 +243,29 @@ tbody tr:hover{background:#FAFBFE}
 .pairtxt{width:100%;font-family:ui-monospace,Consolas,monospace;font-size:11.5px;
   line-height:1.5;word-break:break-all;background:var(--bg);border:1px solid var(--line);
   border-radius:var(--r-s);padding:9px 10px;margin-top:8px;color:var(--ink2)}
+/* ---- 持仓 · 选股指标标签 ---- */
+.quote-card .srltags{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
+.quote-card .srltag{font-size:11px;padding:2px 7px;border-radius:10px;line-height:1.5;border:1px solid var(--line)}
+.quote-card .srltag.hit{background:rgba(18,160,92,.10);color:#0f7a47;border-color:rgba(18,160,92,.30)}
+.quote-card .srltag.miss{background:rgba(166,58,58,.08);color:#a63a3a;border-color:rgba(166,58,58,.22)}
+.quote-card .srltag.na{background:var(--bg);color:var(--ink3);border-color:var(--line)}
+.quote-card .srlcnt{font-size:11px;color:var(--ink3);align-self:center;margin-left:2px}
+.sel{height:30px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink);font-size:13px;padding:0 6px;max-width:150px}
+/* ---- 资产配置 ---- */
+.seclab{font-size:13px;font-weight:600;color:var(--ink);margin:2px 0 8px;display:flex;align-items:center;gap:6px}
+.seclab:before{content:"";width:3px;height:13px;background:var(--brand);border-radius:2px;display:inline-block}
+.allocbar{display:flex;height:22px;border-radius:7px;overflow:hidden;background:var(--line);margin:8px 0 4px}
+.allocbar span{height:100%;display:block}
+.chips{display:flex;gap:8px;flex-wrap:wrap}
+.chip{font-size:13px;padding:7px 14px;border:1px solid var(--line);border-radius:20px;background:var(--card);color:var(--ink2);cursor:pointer}
+.chip.on{background:var(--brand);color:#fff;border-color:var(--brand)}
+.warnbox{margin-top:10px;background:var(--warn-soft);border:1px solid #F3D89A;color:#8a5a00;padding:10px 12px;border-radius:10px;font-size:13px;line-height:1.7}
+.dtab{width:100%;border-collapse:collapse;margin-top:6px;font-size:13px}
+.dtab th,.dtab td{padding:7px 8px;text-align:left;border-bottom:1px solid var(--line)}
+.dtab th{color:var(--ink3);font-weight:600;font-size:12px}
+.dtab .num{text-align:right;font-variant-numeric:tabular-nums}
+.tips{margin:0;padding-left:18px;line-height:1.9;font-size:13.5px;color:var(--ink2)}
+.tips li{margin-bottom:4px}
 </style>
 </head>
 <body>
@@ -286,7 +309,8 @@ var VIEWS = [
   {id:"screen",   name:"选股",     sub:"规则库 · 监控池"},
   {id:"log",      name:"投资日志", sub:"当时怎么想的"},
   {id:"temp",     name:"市场温度", sub:"估值 · 股债性价比"},
-  {id:"dividend", name:"股息日历", sub:"分红到账记录"}
+  {id:"dividend", name:"股息日历", sub:"分红到账记录"},
+  {id:"config",   name:"资产配置", sub:"目标 · 模型 · 再平衡"}
 ];
 var CUR = "plan";
 
@@ -1637,11 +1661,32 @@ function renderHold(){
   hs.forEach(function(h){ var st=holdingStats(h); totMV+=st.mv; totCst+=st.cst; totDay+=(st.dayPnl||0); });
   var totPnl=totMV-totCst, totPct=totCst>0?totPnl/totCst*100:null;
 
+  /* 按选股指标筛选：HOLD_FILTER>0 时，只显示命中相应数量的持仓 */
+  var disp = hs;
+  if(HOLD_FILTER){
+    disp = hs.filter(function(x){
+      var rh=holdingRuleHits(x.code); if(!rh) return false;
+      var n=rh.hrs.length, tot=rh.on.length;
+      if(HOLD_FILTER===1) return n>=1;
+      if(HOLD_FILTER===3) return n>=3;
+      if(HOLD_FILTER===9) return tot>0 && n===tot;
+      return false;
+    });
+  }
+
   var h='';
   h+='<div class="card"><div class="rowbtw" style="margin-bottom:12px">'+
-     '<div><h2 style="margin:0">持仓总览</h2><div class="mut">共 '+hs.length+' 只 · '+
+     '<div><h2 style="margin:0">持仓总览</h2><div class="mut">共 '+hs.length+' 只'+
+       (HOLD_FILTER&&disp?' · 筛选后 '+disp.length+' 只':'')+' · '+
        (QT.ok?("行情更新于 "+qtTime(QT.ok)):"行情每 30 秒自动刷新")+'</div></div>'+
-     '<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn gh sm" id="rfq">立即刷新</button>'+
+     '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'+
+     '<select id="_hfilter" class="sel" title="按已开启的选股指标筛选持仓">'+
+       '<option value="0" '+(HOLD_FILTER===0?"selected":"")+'>全部持仓</option>'+
+       '<option value="1" '+(HOLD_FILTER===1?"selected":"")+'>命中≥1项指标</option>'+
+       '<option value="3" '+(HOLD_FILTER===3?"selected":"")+'>命中≥3项指标</option>'+
+       '<option value="9" '+(HOLD_FILTER===9?"selected":"")+'>全命中</option>'+
+     '</select>'+
+     '<button class="btn gh sm" id="rfq">立即刷新</button>'+
      '<button class="btn gh sm" id="impHold">批量导入</button>'+
      '<button class="btn gh sm" id="addSellNew">+ 卖出</button>'+
      '<button class="btn sm" id="addHold">+ 买入</button></div></div>'+
@@ -1669,7 +1714,7 @@ function renderHold(){
        '<span class="mut">点右上角「+ 买入」记录你的第一笔</span></div></div>';
   }else{
     h+='<div class="grid g3">';
-    hs.forEach(function(x){
+    disp.forEach(function(x){
       var st=holdingStats(x), q=st.q;
       var chgCls=q?cls(q.chgPct):"fl";
       var tgt=toNum(x.targetSell);
@@ -1693,6 +1738,20 @@ function renderHold(){
         (tgt>0?'<div class="kv"><span>目标卖出价</span><b class="num">'+fmt(tgt,2)+
           ' <span class="mut">('+(dist>=0?"还差 "+fmt(dist,1)+"%":"已超过")+')</span></b></div>':'')+
         (x.note?'<div class="mut sm" style="margin-top:2px">'+esc(x.note)+'</div>':'')+
+        (function(){ var rh=holdingRuleHits(x.code), t='';
+          if(rh){
+            if(rh.hrs.length){
+              t='<div class="srltags">'+rh.hrs.map(function(id){
+                var r=rh.on.filter(function(z){return z.id===id;})[0];
+                return '<span class="srltag hit" title="'+esc(r.desc||'')+'">'+esc(r.label)+'</span>';
+              }).join('')+'<span class="srlcnt">命中 '+rh.hrs.length+'/'+rh.on.length+'</span></div>';
+            }else{
+              t='<div class="srltags"><span class="srltag miss">未命中已开启指标('+rh.on.length+')</span></div>';
+            }
+          }else{
+            t='<div class="srltags"><span class="srltag na">无选股基本面数据</span></div>';
+          }
+          return t; })()+
         '<div style="display:flex;gap:6px;margin-top:4px;flex-wrap:wrap">'+
           '<button class="btn gh sm" data-sell="'+x.id+'">卖出</button>'+
           '<button class="btn gy sm" data-edh="'+x.id+'">编辑</button>'+
@@ -1700,6 +1759,10 @@ function renderHold(){
         '</div></div>';
     });
     h+='</div>';
+    if(HOLD_FILTER && !disp.length){
+      h+='<div class="card"><div class="empty"><div class="ic">⛔</div>当前筛选条件下没有持仓<br>'+
+         '<span class="mut">把上面的筛选器调回「全部持仓」看看</span></div></div>';
+    }
   }
 
   /* 卖出记录（含补录）：账户里已经卖掉的、或在工作台之外卖掉的，都在这里 */
@@ -1776,6 +1839,8 @@ function renderHold(){
 
   var rf=$("#rfq");
   if(rf) rf.onclick=function(){ refreshAllQuotes(function(){ render(); toast("行情已刷新"); }); };
+  var hf=$("#_hfilter");
+  if(hf) hf.onchange=function(){ HOLD_FILTER=parseInt(hf.value)||0; render(); };
 
   $$("[data-sell]").forEach(function(el){
     el.onclick=function(){
@@ -1861,6 +1926,140 @@ function renderHold(){
   });
 }
 
+/* ===================== 资产配置 ===================== */
+/* 几套经过验证的配置框架，让用户按自己的目标挑一套，照着把资金分层。
+   alloc 是「占当前总资产的比例(%)」，类目对应下方 ALLOC_CLASS。 */
+var ALLOC_CLASS = {stock:"股票/权益", bond:"债券/固收", cash:"现金/货基", gold:"黄金", ins:"保险保障"};
+var ALLOC_COLOR = {stock:"#E8930C", bond:"#2C5BE6", cash:"#12A05C", gold:"#C9A227", ins:"#8B7BF0"};
+var ALLOC_MODELS = [
+  {id:"four", name:"四笔钱 · 有知有行", short:"四笔钱",
+   desc:"按资金期限分成四笔：活钱 / 稳健 / 长期 / 保险。最贴合你规划页的目标框架，先解决「这笔钱什么时候用」再谈买什么。",
+   alloc:{stock:60,bond:20,cash:10,gold:0,ins:10},
+   fit:"目标清晰、不想天天盯盘的人；你规划页就是这个框架，直接对齐最省心。"},
+  {id:"6040", name:"经典 60/40 股债", short:"60/40",
+   desc:"股票 60% + 债券 40%。诺贝尔奖得主都推荐的入门平衡组合，长期收益不差、波动比纯股小很多。",
+   alloc:{stock:60,bond:40,cash:0,gold:0,ins:0},
+   fit:"想省心、能接受中等波动的上班族。"},
+  {id:"8020", name:"进取 80/20 股债", short:"80/20",
+   desc:"股票 80% + 债券 20%。收益弹性更大，回撤也更大，适合距离用钱还早、心脏大的人。",
+   alloc:{stock:80,bond:20,cash:0,gold:0,ins:0},
+   fit:"长期(5年+)不用的钱、能扛 30%+ 回撤。"},
+  {id:"core", name:"核心-卫星", short:"核心卫星",
+   desc:"70% 核心(宽基指数，如沪深300/中证A500) + 15% 卫星(你看好的行业/个股) + 15% 债券现金。攻守兼备。",
+   alloc:{stock:85,bond:15,cash:0,gold:0,ins:0},
+   fit:"想自己挑股票、又不想全仓押注个股的人（贴近你现在的风格）。"},
+  {id:"allw", name:"全天候 · 风险平价", short:"全天候",
+   desc:"股票 30% + 债券 40% + 黄金 15% + 现金 15%（桥水达里奥版）。任一资产暴跌，别的会补位，最抗极端行情。",
+   alloc:{stock:30,bond:40,gold:15,cash:15,ins:0},
+   fit:"最怕「黑天鹅」、追求全天候不塌房的人。"},
+  {id:"def", name:"防守低波动", short:"防守",
+   desc:"股票 30% + 债券 40% + 现金 20% + 黄金 10%。把波动压到最低，牺牲一点收益换安稳。",
+   alloc:{stock:30,bond:40,cash:20,gold:10,ins:0},
+   fit:"临近用钱、或刚经历大跌睡不着的人。"}
+];
+var ALLOC_SEL = "four";
+
+function renderConfig(){
+  var hs=S.holdings;
+  var totMV=0; hs.forEach(function(h){ totMV+=holdingStats(h).mv; });
+  var cash=toNum(S.account.cash), other=toNum(S.account.other);
+  var total=totMV+cash+other;
+  var cur={stock:totMV, bond:0, cash:cash, gold:0, ins:0};
+  var eqPct = total>0 ? totMV/total*100 : 0;
+
+  function bar(segs){
+    var sum=segs.reduce(function(a,b){return a+b.v;},0);
+    if(sum<=0) return '<div class="allocbar"><span style="width:100%;background:var(--line)"></span></div>';
+    return '<div class="allocbar">'+segs.filter(function(s){return s.v>0;}).map(function(s){
+      var p=s.v/sum*100;
+      return '<span style="width:'+p.toFixed(1)+'%;background:'+s.c+'" title="'+esc(s.t)+' '+fmt(p,1)+'%"></span>';
+    }).join('')+'</div>';
+  }
+
+  var m = ALLOC_MODELS.filter(function(x){return x.id===ALLOC_SEL;})[0] || ALLOC_MODELS[0];
+
+  var curSegs=[
+    {t:"股票", v:totMV, c:"#E8930C"},
+    {t:"现金", v:cash, c:"#12A05C"},
+    {t:"其他", v:other, c:"#9AA3B2"}
+  ];
+  var tSegs=Object.keys(ALLOC_CLASS).map(function(k){ return {t:ALLOC_CLASS[k], v:(m.alloc[k]||0), c:ALLOC_COLOR[k]}; });
+
+  var diffRows=Object.keys(ALLOC_CLASS).map(function(k){
+    var tgt=total*(m.alloc[k]||0)/100, cv=cur[k]||0, diff=tgt-cv;
+    var dc = diff>=0.5 ? "up" : (diff<=-0.5 ? "down" : "flat");
+    var act = diff>0.5 ? ("需增配 "+money(diff))
+            : (diff<-0.5 ? ("可减配 "+money(-diff)) : "基本到位");
+    return '<tr><td>'+ALLOC_CLASS[k]+'</td>'+
+      '<td class="num">'+money(cv)+'</td>'+
+      '<td class="num">'+money(tgt)+' <span class="mut">('+fmt(m.alloc[k]||0,0)+'%)</span></td>'+
+      '<td class="num '+dc+'">'+act+'</td></tr>';
+  }).join('');
+
+  var h='';
+  h+='<div class="card"><div class="rowbtw" style="margin-bottom:8px"><div><h2 style="margin:0">资产配置</h2>'+
+     '<div class="mut">根据目标，挑一套舒服的配置，照着把资金分层</div></div></div>';
+
+  /* —— 当前画像 —— */
+  h+='<div class="seclab">你现在的样子</div>';
+  h+='<div class="mut" style="margin-bottom:2px">总资产 <b class="num">'+money(total)+
+     '</b> · 权益(股票)占比 <b class="num '+(eqPct>=80?"down":"")+'">'+fmt(eqPct,1)+'%</b></div>';
+  h+=bar(curSegs);
+  h+='<div class="mut sm" style="margin-top:6px">';
+  curSegs.forEach(function(s){ if(s.v>0) h+='<span style="color:'+s.c+'">●</span> '+s.t+' '+moneyShort(s.v)+'　'; });
+  if(other>0) h+='<span class="mut">（其他 = 基金/黄金等，可并入下面的对应类别）</span>';
+  h+='</div>';
+  if(eqPct>=80){
+    h+='<div class="warnbox">⚠️ 你几乎 100% 暴露在股票上，没有任何缓冲垫。市场大跌时所有权益一起缩水，'+
+       '也没有现金在低位补仓。建议先留足活钱、配一部分债券/固收打底。</div>';
+  }
+
+  /* —— 你的目标（四笔钱） —— */
+  var fm=S.plan.fourMoney;
+  h+='<div class="seclab" style="margin-top:16px">你的目标（规划页 · 四笔钱）</div>';
+  h+='<div class="grid g4">';
+  [["live","活钱管理"],["steady","稳健理财"],["long","长期投资"],["ins","保险保障"]].forEach(function(p){
+    var b=fm[p[0]];
+    h+='<div class="metric"><div class="lb" style="color:'+b.color+'">'+b.name+'</div>'+
+       '<div class="vl num">'+fmt(b.target,0)+'%</div><div class="ex">目标占比</div></div>';
+  });
+  h+='</div>';
+
+  /* —— 模型选择器 —— */
+  h+='<div class="seclab" style="margin-top:18px">常见配置模型 · 点一个看怎么分你的钱</div>';
+  h+='<div class="chips">';
+  ALLOC_MODELS.forEach(function(x){
+    h+='<button class="chip '+(x.id===ALLOC_SEL?"on":"")+'" data-alloc="'+x.id+'">'+x.short+'</button>';
+  });
+  h+='</div>';
+
+  /* —— 选中模型详情 —— */
+  h+='<div class="card" style="margin-top:12px"><h3 style="margin:0 0 4px">'+esc(m.name)+'</h3>'+
+     '<div class="mut" style="line-height:1.7">'+esc(m.desc)+'</div>';
+  h+=bar(tSegs);
+  h+='<div class="mut sm" style="margin-top:6px">';
+  Object.keys(ALLOC_CLASS).forEach(function(k){ if((m.alloc[k]||0)>0) h+='<span style="color:'+ALLOC_COLOR[k]+'">●</span> '+ALLOC_CLASS[k]+' '+fmt(m.alloc[k],0)+'% · '+moneyShort(total*(m.alloc[k]||0)/100)+'　'; });
+  h+='</div>';
+  h+='<div class="seclab" style="margin-top:12px">与当前对比（基于总资产 '+money(total)+'）</div>';
+  h+='<table class="dtab"><thead><tr><th>类别</th><th>当前</th><th>目标</th><th>动作</th></tr></thead><tbody>'+diffRows+'</tbody></table>';
+  h+='<div class="seclab" style="margin-top:12px">适合谁</div><div class="mut" style="line-height:1.7">'+esc(m.fit)+'</div>';
+  h+='</div>';
+
+  /* —— 下一步建议 —— */
+  h+='<div class="card" style="margin-top:14px"><h3 style="margin:0 0 8px">下一步建议</h3><ul class="tips">';
+  h+='<li>先照「活钱」比例（你现在 '+(total>0?fmt(cash/total*100,0):0)+'%）把要用的钱放进货币基金，<b>这笔钱绝不进股市</b>。</li>';
+  h+='<li>用「'+m.short+'」模型的目标，把剩余资金分成股票/债券两大部分，<b>先买债券/固收打底</b>，再分批进股。</li>';
+  h+='<li>每季度做一次「再平衡」：哪类涨超了就把利润挪回欠配的类，保持比例不漂移。</li>';
+  h+='<li>配置比例只是框架，<b>先按比例把现金分好类、留足活钱</b>，比精确到位更重要。</li>';
+  h+='</ul></div>';
+
+  h+='</div>';
+  $("#view").innerHTML=h;
+  $$("[data-alloc]").forEach(function(b){
+    b.onclick=function(){ ALLOC_SEL=b.getAttribute("data-alloc"); render(); };
+  });
+}
+
 /* ===================== 页4 · 选股 ===================== */
 var SCREEN_MIN=0;   /* 0 = 自动挑一个「至少 5 只入选」的最高门槛 */
 function stockData(){
@@ -1882,6 +2081,18 @@ function passRule(st,r){
   if(r.op==="gt")  return v>r.val;
   if(r.op==="lt")  return v<r.val;
   return false;
+}
+/* 把「某只持仓股票」对照已开启的选股规则，返回命中情况。
+   用于持仓页给每只股票贴上「达到了哪些指标」的标签，方便按指标筛选。
+   注意：选股池用 s.c 存代码（不是 s.code），匹配时按 code 对齐。 */
+var HOLD_FILTER = 0;   /* 0=全部 1=命中≥1 3=命中≥3 9=全命中 */
+function holdingRuleHits(code){
+  var d=stockData(); if(!d) return null;
+  var st=d.stocks.filter(function(s){return String(s.c)===String(code);})[0];
+  if(!st) return null;
+  var on=S.rules.filter(function(r){return r.on;});
+  var hrs=on.filter(function(r){return passRule(st,r);}).map(function(r){return r.id;});
+  return {st:st,on:on,hrs:hrs};
 }
 function screenStocks(){
   var d=stockData(); if(!d) return null;
@@ -2832,7 +3043,7 @@ function go(id){
 }
 function render(){
   var map={plan:renderPlan,account:renderAccount,hold:renderHold,screen:renderScreen,
-    log:renderLog,temp:renderTemp,dividend:renderDividend};
+    log:renderLog,temp:renderTemp,dividend:renderDividend,config:renderConfig};
   var v=VIEWS.filter(function(x){return x.id===CUR;})[0];
   $("#pgSub").textContent=v?v.sub:"";
   (map[CUR]||renderPlan)();
@@ -2901,7 +3112,7 @@ document.addEventListener("DOMContentLoaded",boot);
    带版本号的 URL 可绕开浏览器对同一 SW 脚本 24 小时的更新节流。 */
 if("serviceWorker" in navigator && location.protocol!=="file:"){
   window.addEventListener("load",function(){
-    navigator.serviceWorker.register("./sw.js?v=5").then(function(reg){
+    navigator.serviceWorker.register("./sw.js?v=6").then(function(reg){
       reg.update&&reg.update();
     }).catch(function(){});
   });
@@ -2920,7 +3131,8 @@ window.__WB__={get S(){return S;},render:render,go:go,xirr:xirr,twr:twr,metrics:
   paired:paired,cloudCfg:cloudCfg,pairLinkUrl:pairLinkUrl,parsePairHash:parsePairHash,
   applyPairCode:applyPairCode,hasPairHash:hasPairHash,clearPairHash:clearPairHash,
   localIsEmpty:localIsEmpty,cloudPull:cloudPull,cloudProbe:cloudProbe,cloudPush:cloudPush,
-  renderSyncBar:renderSyncBar,persist:persist,getSync:function(){return SYNC;}};
+  renderSyncBar:renderSyncBar,persist:persist,getSync:function(){return SYNC;},
+  renderConfig:renderConfig,holdingRuleHits:holdingRuleHits,ALLOC_MODELS:ALLOC_MODELS};
 </script>
 </body>
 </html>
