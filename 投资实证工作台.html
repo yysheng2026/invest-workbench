@@ -127,6 +127,9 @@ tbody tr:hover{background:#FAFBFE}
 .hr{height:1px;background:var(--line);margin:16px 0}
 .rowbtw{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
 .mut{color:var(--ink3);font-size:12.5px}
+.ybar{height:5px;border-radius:3px;background:var(--bg);overflow:hidden;margin:0 auto 3px;max-width:56px;border:1px solid var(--line)}
+.ybar i{display:block;height:100%;background:var(--brand)}
+.ybar.lo i{background:var(--up)}.ybar.hi i{background:var(--down)}
 .sm{font-size:12.5px}
 .b{font-weight:600}
 .nowrap{white-space:nowrap}
@@ -410,6 +413,11 @@ function seedState(){
     trades:[],
     rules:defaultRules(),
     watch:[],
+    /* 主力成本累积估算：code -> {n,amtSum,qtySum,lastDate,lastAmt,lastQty}
+       每天（建议收盘后）点一次「刷新行情」自动记一笔：当日主力资金净流入 + 当日均价。
+       cost = Σ净流入金额 ÷ Σ(净流入金额 ÷ 当日均价)，即主力净成交的平均价格。
+       只存 6 个数字、不存逐日明细，避免 localStorage 膨胀。 */
+    mcost:{},
     logs:[],
     dividends:[],
     tempCfg:{bondYield:1.8,peLow:25,peHigh:60,brHigh:16,brLow:1,gapCold:4,gapHot:-1},
@@ -465,6 +473,7 @@ function load(){
   var d=seedState();
   ["plan","account","tempCfg","settings"].forEach(function(k){ if(!S[k]) S[k]=d[k]; });
   ["holdings","trades","rules","watch","logs","dividends","flows"].forEach(function(k){ if(!Array.isArray(S[k])) S[k]=d[k]||[]; });
+  if(!S.mcost||typeof S.mcost!=="object") S.mcost={};
   if(!Array.isArray(S.account.flows))  S.account.flows=[];
   if(!Array.isArray(S.account.snaps))  S.account.snaps=[];
   if(!S.plan.longTerm) S.plan.longTerm=d.plan.longTerm;
@@ -514,6 +523,7 @@ function normalizeState(){
   var d=seedState();
   ["plan","account","tempCfg","settings"].forEach(function(k){ if(!S[k]) S[k]=d[k]; });
   ["holdings","trades","rules","watch","logs","dividends","flows"].forEach(function(k){ if(!Array.isArray(S[k])) S[k]=d[k]||[]; });
+  if(!S.mcost||typeof S.mcost!=="object") S.mcost={};
   if(!Array.isArray(S.account.flows))  S.account.flows=[];
   if(!Array.isArray(S.account.snaps))  S.account.snaps=[];
   if(!S.plan.longTerm) S.plan.longTerm=d.plan.longTerm;
@@ -774,6 +784,127 @@ function refreshAllQuotes(cb){
   if(codes.indexOf("000300")<0) codes.push("000300");
   if(!codes.length){ cb&&cb(); return; }
   fetchQuotes(codes,cb);
+}
+
+/* ---------------- 主力成本（累积估算）+ 近一年价格分位 ----------------
+   主力成本：真·机构持仓成本是拿不到的（交易所不公开）。这里用「主力资金净流入」
+   逐日加权累加来估算：每天记一次「当日主力净流入金额」和「当日均价」，
+   cost = Σ金额 ÷ Σ(金额÷价格)，等价于主力净买入的成交量加权平均价。
+   局限必须清楚：① 只有「净额」，主力当天又买又卖的部分互相抵消，看不到；
+   ② 是滞后数据，主力自己也会看错、也会割肉；③ 需要连续积累才有统计意义。
+   ------------------------------------------------------------------- */
+var MC_MIN_DAYS = 5;      /* 少于这么多天不给值（噪音太大） */
+var MC_FULL_DAYS = 20;    /* 达到这么多天认为是稳定值 */
+var YEARPOS = {};         /* code -> {hi,lo,pos} 近一年最高/最低/现价分位 */
+var EXTRA_AUTO = 0;       /* 进入页面时自动补抓一次，避免一屏"—" */
+
+function emSecid(code){
+  var c = String(code || "").trim();
+  if(!/^\d{6}$/.test(c)) return "";
+  if(/^(6|9|5)/.test(c)) return "1." + c;   /* 沪市股票 / 沪B / 沪ETF */
+  if(/^11/.test(c))      return "1." + c;   /* 沪可转债 */
+  return "0." + c;                          /* 深市、北交所 */
+}
+function mcAmtOK(amtSum){ return Math.abs(toNum(amtSum)) >= 10000; }  /* 净额太小=噪音 */
+
+function mainCostOf(code){
+  if(!S.mcost) return null;
+  var m = S.mcost[code];
+  if(!m || !m.qtySum) return null;
+  var amt = toNum(m.amtSum), q = toNum(m.qtySum);
+  if(!q || !isFinite(amt / q)) return null;
+  var cost = amt / q;
+  if(!isFinite(cost) || cost <= 0) return null;
+  if(!mcAmtOK(amt)) return null;
+  return { cost: cost, n: toNum(m.n) || 0, net: amt, ready: (toNum(m.n) || 0) >= MC_MIN_DAYS };
+}
+/* 记一笔。同一天重复刷新时先把上次那笔回滚，再按最新值重记，避免重复累加 */
+function recordMainCost(code, day, amt, px){
+  if(!/^\d{6}$/.test(String(code || "")) || !day || !(px > 0)) return false;
+  if(!S.mcost) S.mcost = {};
+  var m = S.mcost[code] || { n:0, amtSum:0, qtySum:0, lastDate:"", lastAmt:0, lastQty:0 };
+  if(m.lastDate === day){
+    m.amtSum -= toNum(m.lastAmt);
+    m.qtySum -= toNum(m.lastQty);
+  }else{
+    m.n = (toNum(m.n) || 0) + 1;
+  }
+  var q = amt / px;
+  m.amtSum = toNum(m.amtSum) + amt;
+  m.qtySum = toNum(m.qtySum) + q;
+  m.lastDate = day; m.lastAmt = amt; m.lastQty = q;
+  S.mcost[code] = m;
+  return true;
+}
+/* 东财「当日主力净流入 + 当日收盘价」。主站 push2his 常被限流，
+   push2delay 这个节点实测稳定且带 CORS，但只提供当日数据（历史拿不到）。*/
+function fetchMainCost(codes, cb){
+  codes = (codes || []).filter(function(c){ return emSecid(c); });
+  if(!codes.length){ cb && cb(0); return; }
+  var F = "&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65";
+  var got = 0, pending = codes.length;
+  if(!pending){ cb && cb(0); return; }
+  function fin(){ if(--pending <= 0) cb && cb(got); }
+  codes.forEach(function(code){
+    var url = "https://push2delay.eastmoney.com/api/qt/stock/fflow/daykline/get?secid=" +
+              encodeURIComponent(emSecid(code)) + "&lmt=1&klt=101" + F;
+    if(typeof fetch !== "function"){ fin(); return; }
+    var to = setTimeout(fin, 9000);
+    fetch(url, { cache: "no-store" }).then(function(r){
+      if(!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    }).then(function(d){
+      var ks = (d && d.data && d.data.klines) || [];
+      if(ks.length){
+        var f = String(ks[0]).split(",");
+        /* 字段：0日期 1主力净流入 2小单 3中单 4大单 5超大单 ... 11当日收盘价 */
+        if(recordMainCost(code, f[0], toNum(f[1]), toNum(f[11]))) got++;
+      }
+      clearTimeout(to); fin();
+    }).catch(function(){ clearTimeout(to); fin(); });
+  });
+}
+/* 近一年（250 交易日）价格分位：腾讯日 K，稳定可用 */
+function fetchYearPos(codes, cb){
+  codes = (codes || []).filter(function(c){ return /^\d{6}$/.test(String(c || "")); });
+  if(!codes.length){ cb && cb(); return; }
+  var pending = codes.length;
+  function fin(){ if(--pending <= 0) cb && cb(); }
+  codes.forEach(function(code){
+    var tk = tcode(code);
+    var node0 = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=" + tk + ",day,,,250,qfq";
+    if(typeof fetch !== "function"){ fin(); return; }
+    var to = setTimeout(fin, 9000);
+    fetch(node0, { cache: "no-store" }).then(function(r){
+      if(!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    }).then(function(d){
+      var node = (d && d.data && d.data[tk]) || {};
+      var k = node.qfqday || node.day || [];
+      if(k.length){
+        var hi = -Infinity, lo = Infinity, i;
+        for(i = 0; i < k.length; i++){
+          var h = toNum(k[i][3]), l = toNum(k[i][4]);
+          if(h > hi) hi = h;
+          if(l > 0 && l < lo) lo = l;
+        }
+        if(hi > 0 && lo > 0 && hi > lo){
+          var q = QUOTE[code];
+          var px = q && toNum(q.price) > 0 ? toNum(q.price) : toNum(k[k.length - 1][2]);
+          YEARPOS[code] = { hi: hi, lo: lo, px: px,
+            pos: Math.max(0, Math.min(100, (px - lo) / (hi - lo) * 100)) };
+        }
+      }
+      clearTimeout(to); fin();
+    }).catch(function(){ clearTimeout(to); fin(); });
+  });
+}
+function refreshExtras(codes, cb){
+  if(!codes || !codes.length){ cb && cb(); return; }
+  var left = 2, hit = 0;
+  function fin(){ if(--left <= 0) cb && cb(hit); }
+  fetchYearPos(codes, fin);
+  fetchMainCost(codes, function(g){ hit = g; fin(); });
 }
 
 /* ---------------- SVG 折线图 ---------------- */
@@ -2538,11 +2669,42 @@ function renderScreen(){
     h+='<div class="empty"><div class="ic">—</div>监控池是空的<br>'+
        '<span class="mut">把全部命中规则的股票加进来，设好目标买入价，到价了再动手</span></div>';
   }else{
+    h+='<div class="mut sm" style="margin:-2px 0 10px;line-height:1.65">'+
+       '<b>主力成本</b>＝按每日「主力资金净流入 ÷ 当日股价」累加估算的主力净成交均价，'+
+       '需连续记录至少 '+MC_MIN_DAYS+' 个交易日才有值（'+MC_FULL_DAYS+' 天后更稳），'+
+       '每天收盘后点一次「刷新行情」自动记一笔。<br>'+
+       '<b>注意：股价低于主力成本，不等于值得买入。</b>'+
+       '它是滞后数据，主力一样会看错、会割肉，深套的庄股比比皆是。'+
+       '它只告诉你「这段时间主力净成交的均价在哪」，真正的买入理由仍是估值、基本面和你自己的买入规则。</div>';
     var due=ws.filter(function(w){ var q=QUOTE[w.code]; return q&&toNum(q.price)>0&&toNum(w.targetBuy)>0&&toNum(q.price)<=toNum(w.targetBuy); });
     if(due.length) h+='<div class="tag y" style="margin-bottom:10px;padding:6px 12px;font-size:13px">'+
       due.length+' 只已到目标买入价：'+due.map(function(w){return esc(w.name||w.code);}).join("、")+'</div>';
     h+='<div class="tw"><table><thead><tr><th>代码</th><th>名称</th><th class="r">现价</th><th class="r">涨跌</th>'+
+       '<th class="r" title="按每日主力资金净流入估算的净成交均价（估）">主力成本</th>'+
+       '<th class="r" title="现价相对主力成本的偏离">距主力</th>'+
+       '<th class="c" title="现价处在近一年最高～最低区间的什么位置">年分位</th>'+
        '<th class="r">目标买入</th><th class="r">距买点</th><th>理由</th><th class="c">状态</th><th class="c">操作</th></tr></thead><tbody>';
+    function ypCell(code){
+      var y=YEARPOS[code];
+      if(!y) return '<td class="c mut sm">—</td>';
+      var w2=Math.max(2,Math.min(100,y.pos));
+      var tone=(y.pos>=70?" hi":(y.pos<=30?" lo":""));
+      return '<td class="c"><div class="ybar'+tone+'"><i style="width:'+w2.toFixed(0)+'%"></i></div>'+
+             '<div class="num sm '+(y.pos>=70?"up":(y.pos<=30?"down":"mut"))+'">'+y.pos.toFixed(0)+'%</div></td>';
+    }
+    function mcCell(code,price){
+      var m=mainCostOf(code);
+      if(!m) return '<td class="r mut sm">—</td><td class="r mut sm">—</td>'+ypCell(code);
+      if(!m.ready){
+        return '<td class="r mut sm">积累中 '+m.n+'/'+MC_MIN_DAYS+'</td>'+
+               '<td class="r mut sm">—</td>'+ypCell(code);
+      }
+      var d=(price&&price>0)?(price/m.cost-1)*100:null;
+      var below=(d!=null&&d<0);
+      var tip=(m.n<MC_FULL_DAYS)?' <span class="mut">('+m.n+'天)</span>':'';
+      return '<td class="r num">'+fmt(m.cost,2)+tip+'</td>'+
+             '<td class="r num '+(below?"down":"up")+'">'+(d!=null?pct(d):"—")+'</td>'+ypCell(code);
+    }
     ws.forEach(function(w){
       var q=QUOTE[w.code], price=q?toNum(q.price):null;
       var tb=toNum(w.targetBuy);
@@ -2552,6 +2714,7 @@ function renderScreen(){
         '<td class="nowrap">'+esc(w.name||w.code)+'</td>'+
         '<td class="r num b">'+(price!=null?fmt(price,2):"—")+'</td>'+
         '<td class="r num '+cls(q?q.chgPct:null)+'">'+(q?pct(q.chgPct):"—")+'</td>'+
+        mcCell(w.code,price)+
         '<td class="r num">'+(tb>0?fmt(tb,2):"—")+'</td>'+
         '<td class="r num '+(isDue?"up":"")+'">'+(dist!=null?(pct(dist)):"—")+'</td>'+
         '<td class="mut sm">'+esc(w.reason||"")+'</td>'+
@@ -2689,8 +2852,25 @@ function renderScreen(){
     };
   };
   var aw=$("#addW"); if(aw) aw.onclick=openAddW;
-  var rfw=function(){ refreshAllQuotes(function(){ render(); toast("行情已刷新"); }); };
+  var rfw=function(){
+    toast("正在刷新行情…");
+    refreshAllQuotes(function(){
+      render();
+      var cs=S.watch.map(function(w){return w.code;});
+      refreshExtras(cs,function(hit){
+        save(); render();
+        toast(hit?("行情已刷新，记入 "+hit+" 只主力资金数据"):"行情已刷新");
+      });
+    });
+  };
   ["#rfw","#rfw2"].forEach(function(s){ var b=$(s); if(b) b.onclick=rfw; });
+  /* 首次进入页面时自动补抓一次，避免满屏「—」 */
+  if(S.watch.length && !EXTRA_AUTO){
+    EXTRA_AUTO=1;
+    setTimeout(function(){
+      refreshExtras(S.watch.map(function(w){return w.code;}),function(){ if(S.watch.length){ save(); render(); } });
+    },400);
+  }
 }
 
 /* ===================== 页5 · 投资日志 ===================== */
@@ -3462,7 +3642,7 @@ document.addEventListener("DOMContentLoaded",boot);
    带版本号的 URL 可绕开浏览器对同一 SW 脚本 24 小时的更新节流。 */
 if("serviceWorker" in navigator && location.protocol!=="file:"){
   window.addEventListener("load",function(){
-    navigator.serviceWorker.register("./sw.js?v=9").then(function(reg){
+    navigator.serviceWorker.register("./sw.js?v=10").then(function(reg){
       reg.update&&reg.update();
     }).catch(function(){});
   });
@@ -3482,7 +3662,9 @@ window.__WB__={get S(){return S;},render:render,go:go,xirr:xirr,twr:twr,metrics:
   applyPairCode:applyPairCode,hasPairHash:hasPairHash,clearPairHash:clearPairHash,
   localIsEmpty:localIsEmpty,cloudPull:cloudPull,cloudProbe:cloudProbe,cloudPush:cloudPush,
   renderSyncBar:renderSyncBar,persist:persist,getSync:function(){return SYNC;},
-  renderConfig:renderConfig,holdingRuleHits:holdingRuleHits,STK_FRAME:STK_FRAME,STK_FRAME_SEL:STK_FRAME_SEL,stockCheck:stockCheck,stockCheckHtml:stockCheckHtml,renderFund:renderFund,holdingRole:holdingRole};
+  renderConfig:renderConfig,holdingRuleHits:holdingRuleHits,STK_FRAME:STK_FRAME,STK_FRAME_SEL:STK_FRAME_SEL,stockCheck:stockCheck,stockCheckHtml:stockCheckHtml,renderFund:renderFund,holdingRole:holdingRole,
+  emSecid:emSecid,recordMainCost:recordMainCost,mainCostOf:mainCostOf,
+  get MC(){return {MIN:MC_MIN_DAYS,FULL:MC_FULL_DAYS};},get YEARPOS(){return YEARPOS;},setYEARPOS:function(o){YEARPOS=o||{};}};
 </script>
 </body>
 </html>
