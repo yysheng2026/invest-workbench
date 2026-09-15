@@ -294,6 +294,7 @@ tbody tr:hover{background:#FAFBFE}
 <div id="toast"></div>
 <div id="modalRoot"></div>
 <script src="./stocks_data.js" onerror="window.__NO_STOCK_DATA__=1"></script>
+<script src="./etf_data.js" onerror="window.__NO_ETF_DATA__=1"></script>
 <script>
 /* ==========================================================================
    投资实证工作台  ·  单文件版
@@ -310,7 +311,8 @@ var VIEWS = [
   {id:"log",      name:"投资日志", sub:"当时怎么想的"},
   {id:"temp",     name:"市场温度", sub:"估值 · 股债性价比"},
   {id:"dividend", name:"股息日历", sub:"分红到账记录"},
-  {id:"config",   name:"资产配置", sub:"目标 · 模型 · 再平衡"}
+  {id:"config",   name:"股票配置", sub:"个股 · 行业 · 核心卫星"},
+  {id:"fund",     name:"选基",     sub:"ETF · 溢价 · 规模"}
 ];
 var CUR = "plan";
 
@@ -1928,6 +1930,230 @@ function renderHold(){
   });
 }
 
+/* ===================== 选基 · ETF 数据 ===================== */
+function etfData(){ var d=window.__ETF_DATA__; return (d&&Array.isArray(d.etfs))?d:null; }
+var ETF_CAT={broad:"宽基",strategy:"策略指数",sector:"行业·主题",overseas:"跨境/QDII",
+             commodity:"商品",bond:"债券",money:"货币"};
+var ETF_CATSEL="all", ETF_MINSIZE=0, ETF_MINAMT=0, ETF_MAXPREM=999;
+
+/* ⚠️ 核心/卫星判定 —— 千万别把「ETF」和「宽基」划等号。
+     宽基(跨行业) + 策略指数(红利/低波…)= 核心；行业/主题 ETF + 个股 = 卫星。
+     跨境要再分一层：纳指/标普这类海外宽基 = 核心；恒生科技/中概/中韩半导体 = 卫星(主题)。
+     用户可在「股票配置」页手动覆盖（写进 h.role）。 */
+var OV_BROAD=["纳指","纳斯达克","标普","道琼斯","日经","德国","法国","MSCI","富时","罗素","全球"];
+var OV_THEME=["恒生科技","恒生互联网","恒生医疗","恒生生物","中概","中韩","亚太",
+              "半导体","油气","REIT","科技","医药","消费"];
+function etfCatOf(code,name){
+  var d=etfData();
+  if(d){ var e=d.etfs.filter(function(x){return String(x.c)===String(code);})[0];
+         if(e&&e.cat) return e.cat; }
+  return null;
+}
+function isBroadOverseas(nm){
+  nm=nm||"";
+  for(var i=0;i<OV_THEME.length;i++) if(nm.indexOf(OV_THEME[i])>=0) return false;
+  for(var j=0;j<OV_BROAD.length;j++) if(nm.indexOf(OV_BROAD[j])>=0) return true;
+  return false;
+}
+function holdingRole(h){
+  if(!h) return "sat";
+  if(h.role==="core") return "core";
+  if(h.role==="sat")  return "sat";
+  var cat=etfCatOf(h.code,h.name);
+  if(cat==="broad"||cat==="strategy") return "core";
+  if(cat==="overseas") return isBroadOverseas(h.name)?"core":"sat";
+  return "sat";
+}
+
+/* ---- 单只股票体检 ---- */
+var OPSYM={gte:"≥",lte:"≤",gt:">",lt:"<"};
+function opText(r){ return (OPSYM[r.op]||r.op)+" "+r.val; }
+function ruleValTxt(r,v){
+  if(v==null||!isFinite(v)) return "—";
+  return fmt(v, Math.abs(v)<3?2:1);
+}
+function stockCheck(code){
+  var d=stockData(); if(!d) return null;
+  var st=d.stocks.filter(function(s){return String(s.c)===String(code);})[0];
+  if(!st) return null;
+  var on=S.rules.filter(function(r){return r.on;});
+  var rows=on.map(function(r){ var v=ruleValue(st,r); return {r:r,val:v,pass:passRule(st,r)}; });
+  var hit=rows.filter(function(x){return x.pass;}).length;
+  return {st:st,rows:rows,hit:hit,total:on.length};
+}
+function stockCheckHtml(code){
+  var ck=stockCheck(code);
+  if(!ck) return '<div class="mut">没找到这只股票 —— 试试完整的 6 位代码，或先跑一次「刷新选股数据」</div>';
+  var st=ck.st, q=QUOTE[st.c];
+  var price=q?toNum(q.price):toNum(st.p);
+  var h='';
+  h+='<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:10px">'+
+     '<b style="font-size:16px">'+esc(st.n)+'</b>'+
+     '<span class="mut">'+esc(st.c)+(st.ind?' · '+esc(st.ind):'')+'</span>'+
+     '<b class="num" style="font-size:16px">'+fmt(price,2)+'</b>'+
+     (q?'<span class="num '+cls(q.chgPct)+'">'+pct(q.chgPct)+'</span>':'')+'</div>';
+  function mm(lb,v,ex){ return '<div class="metric"><div class="lb">'+lb+'</div>'+
+      '<div class="vl num">'+v+'</div><div class="ex">'+(ex||"")+'</div></div>'; }
+  h+='<div class="grid g4" style="margin-bottom:12px">'+
+     mm("PE(TTM)",fmt(st.pe,1))+mm("PB",fmt(st.pb,2))+
+     mm("ROE",(st.roe!=null?fmt(st.roe,1)+"%":"—"))+mm("市值(亿)",fmt(st.mc,0))+
+     mm("净利率",(st.nm!=null?fmt(st.nm,1)+"%":"—"))+mm("负债率",(st.dr!=null?fmt(st.dr,1)+"%":"—"))+
+     mm("净利同比",(st.ni!=null?fmt(st.ni,1)+"%":"—"))+mm("命中规则",ck.hit+" / "+ck.total)+
+     '</div>';
+  h+='<div class="seclab">逐条规则核对</div>';
+  h+='<table class="dtab"><thead><tr><th>规则</th><th>要求</th><th class="num">实际</th><th class="c">结果</th></tr></thead><tbody>';
+  ck.rows.forEach(function(x){
+    h+='<tr><td>'+esc(x.r.label)+'</td><td class="mut">'+esc(opText(x.r))+'</td>'+
+       '<td class="num">'+ruleValTxt(x.r,x.val)+'</td>'+
+       '<td class="c">'+(x.pass?'<span class="tag b">符合</span>':'<span class="tag">不符</span>')+'</td></tr>';
+  });
+  h+='</tbody></table>';
+
+  var ratio=ck.total>0?ck.hit/ck.total:0;
+  var mk=((window.__STOCKS_DATA__||{}).market)||{};
+  var peMed=toNum(mk.pe_median);
+  var peTag=(peMed>0&&st.pe>0)?(st.pe<peMed*0.8?"估值低于全市场中位数":
+              (st.pe>peMed*1.2?"估值高于全市场中位数":"估值接近全市场中位数")):"";
+  var t=marketTemp(), deg=t?t.deg:null;
+  var verdict,vc;
+  if(ratio>=0.75 && peTag!=="估值高于全市场中位数"){
+    verdict="基本面扎实、估值不贵：值得重点关注，可考虑分批建仓"; vc="#12A05C";
+  }else if(ratio>=0.75){
+    verdict="好公司，但当前估值偏贵：可小仓位试探，或等回调到更舒服的价格"; vc="#E8930C";
+  }else if(ratio>=0.5){
+    verdict="基本面部分达标：往下看差在哪几条，能接受再决定"; vc="#2C5BE6";
+  }else{
+    verdict="多数关键指标不达标：暂时回避，别因为「看过」就想买"; vc="#888780";
+  }
+  h+='<div class="seclab" style="margin-top:12px">综合判断</div>';
+  h+='<div style="border-left:3px solid '+vc+';padding:8px 0 8px 12px;line-height:1.8">'+
+     '<b style="color:'+vc+'">'+esc(verdict)+'</b>'+
+     (peTag?'<div class="mut sm">'+esc(peTag)+'（全市场 PE 中位数 '+fmt(peMed,1)+'）</div>':'')+
+     (deg!=null?'<div class="mut sm">当前市场温度 '+fmt(deg,0)+'°：'+
+        (deg<35?"偏低，可以更积极一些":(deg>60?"偏热，控制买入节奏":"中性，按计划来"))+'</div>':'')+
+     '<div class="mut sm">这只是按你设的规则做的机械核对，不是荐股；最终看你能不能理解它靠什么赚钱。</div></div>';
+  var inW=S.watch.some(function(w){return w.code===st.c;});
+  h+='<div style="margin-top:10px"><button class="btn '+(inW?"gy":"gh")+' sm" data-ckw="'+esc(st.c)+
+     '" data-ckwn="'+esc(st.n)+'">'+(inW?"已在监控池":"+ 加入监控池")+'</button></div>';
+  return h;
+}
+
+/* ---- 第 9 视图：选基 ---- */
+function premColor(p){
+  if(p==null) return "inherit";
+  var a=Math.abs(p);
+  return a<=1.5?"#12A05C":(a<=3?"inherit":(a<=8?"#BA7517":"#E24B4A"));
+}
+function premAdvice(p){
+  if(p==null) return "—";
+  if(p<=3)  return "可分批买入";
+  if(p<=8)  return "谨慎，减量或等回落";
+  if(p<=10) return "观望";
+  return "坚决回避";
+}
+function renderFund(){
+  var d=etfData(), h='';
+  if(!d){
+    h+='<div class="card"><div class="empty"><div class="ic">—</div>还没有 ETF 数据<br>'+
+       '<span class="mut">在本目录双击「刷新ETF数据.bat」（或运行 refresh_etf.py）抓一次<br>'+
+       '行情和溢价每个交易日都变，建议每周刷一次</span></div></div>';
+    $("#view").innerHTML=h; $("#pgActs").innerHTML=""; return;
+  }
+  var all=d.etfs.slice();
+  h+='<div class="card"><div class="rowbtw" style="margin-bottom:6px"><div><h2 style="margin:0">选基 · ETF</h2>'+
+     '<div class="mut">共 '+fmtInt(all.length)+' 只场内 ETF · 数据 '+esc(d.updated)+'</div></div></div>'+
+     '<div class="mut sm" style="line-height:1.8">先分清<b>宽基 / 策略 / 行业·主题 / 跨境</b>——'+
+     '只有宽基和策略指数算「核心」，行业主题和跨境主题都算「卫星」。<br>'+
+     '本页能给到：规模、成交额、<b>实时溢价率</b>。<b>费率、跟踪误差、跟踪指数</b>免费接口拿不到，'+
+     '请在基金公司页面核对（管理费+托管费 ≤0.2%/年 为最优档）。</div></div>';
+
+  /* --- 跨境/QDII 溢价专区（最要命的一栏） --- */
+  var ov=all.filter(function(e){return e.cat==="overseas"&&e.prem!=null;});
+  ov.sort(function(a,b){return (b.prem||0)-(a.prem||0);});
+  h+='<div class="card" style="margin-top:14px"><h2 style="margin:0 0 4px">跨境 / QDII 溢价专区 '+
+     '<span class="sub">溢价高时买入 = 提前透支未来涨幅</span></h2>'+
+     '<div class="mut sm" style="margin-bottom:10px;line-height:1.8">'+
+     'QDII 受外汇额度限制 → 一级申购受限 → 一二级套利失效 → <b>溢价不会自动收敛</b>。'+
+     '溢价 12% 买入，意味着纳指不跌你也先亏一成多。<br>'+
+     '溢价高企时优先<b>场外联接基金</b>（按净值成交、无溢价），哪怕每天限购一点点。</div>';
+  if(!ov.length){
+    h+='<div class="mut">暂无跨境 ETF 溢价数据</div>';
+  }else{
+    h+='<div class="tw"><table><thead><tr><th>代码</th><th>名称</th><th class="r">现价</th>'+
+       '<th class="r">净值</th><th class="r">溢价</th><th class="r">规模(亿)</th><th>建议</th></tr></thead><tbody>';
+    ov.slice(0,20).forEach(function(e){
+      h+='<tr><td class="nowrap">'+esc(e.c)+'</td><td class="nowrap">'+esc(e.n)+'</td>'+
+         '<td class="r num">'+fmt(e.p,3)+'</td><td class="r num">'+fmt(e.iopv,4)+'</td>'+
+         '<td class="r num" style="color:'+premColor(e.prem)+'">'+fmt(e.prem,2)+'%</td>'+
+         '<td class="r num">'+fmt((e.size||0)/1e8,0)+'</td>'+
+         '<td class="mut sm">'+esc(premAdvice(e.prem))+'</td></tr>';
+    });
+    h+='</tbody></table></div>';
+    h+='<div class="mut sm" style="margin-top:8px">阈值：≤3% 可分批 · 3~8% 谨慎 · 8~10% 观望 · >10% 坚决回避'+
+       '（溢价前 20 只，共 '+ov.length+' 只跨境 ETF）</div>';
+  }
+  h+='</div>';
+
+  /* --- 筛选器 --- */
+  h+='<div class="card" style="margin-top:14px"><h2 style="margin:0 0 10px">按硬指标筛</h2>';
+  h+='<div class="chips">';
+  var cats=[["all","全部"]].concat(Object.keys(ETF_CAT).map(function(k){return [k,ETF_CAT[k]];}));
+  cats.forEach(function(c){
+    h+='<button class="chip '+(ETF_CATSEL===c[0]?"on":"")+'" data-ecat="'+c[0]+'">'+c[1]+'</button>';
+  });
+  h+='</div>';
+  h+='<div class="grid g3" style="margin-top:10px;gap:10px">'+
+     '<div><label class="fl">规模 ≥（亿元）</label><select id="_fsz">'+
+       [0,2,10,50,100].map(function(v){return '<option value="'+v+'" '+
+         (ETF_MINSIZE===v?"selected":"")+'>'+(v?v+" 亿":"不限")+'</option>';}).join('')+'</select></div>'+
+     '<div><label class="fl">成交额 ≥</label><select id="_fam">'+
+       [0,1e7,5e7,1e8,5e8].map(function(v){return '<option value="'+v+'" '+
+         (ETF_MINAMT===v?"selected":"")+'>'+(v?v>=1e8?(v/1e8)+" 亿":(v/1e7)+" 千万":"不限")+'</option>';}).join('')+'</select></div>'+
+     '<div><label class="fl">溢价绝对值 ≤</label><select id="_fpr">'+
+       [[999,"不限"],[1.5,"1.5%"],[3,"3%"],[8,"8%"]].map(function(v){return '<option value="'+v[0]+'" '+
+         (ETF_MAXPREM===v[0]?"selected":"")+'>'+v[1]+'</option>';}).join('')+'</select></div>'+
+     '</div></div>';
+
+  var rs=all.filter(function(e){
+    if(ETF_CATSEL!=="all"&&e.cat!==ETF_CATSEL) return false;
+    if(ETF_MINSIZE>0&&(e.size||0)<ETF_MINSIZE*1e8) return false;
+    if(ETF_MINAMT>0&&(e.amt||0)<ETF_MINAMT) return false;
+    if(ETF_MAXPREM<999&&!(e.prem!=null&&Math.abs(e.prem)<=ETF_MAXPREM)) return false;
+    return true;
+  });
+  rs.sort(function(a,b){return (b.size||0)-(a.size||0);});
+  h+='<div class="card" style="margin-top:14px"><h2 style="margin:0 0 10px">筛选结果 '+
+     '<span class="sub">'+fmtInt(rs.length)+' 只 · 按规模排序</span></h2>';
+  if(!rs.length){
+    h+='<div class="empty">没有符合条件的，把门槛放低一点</div>';
+  }else{
+    h+='<div class="tw"><table><thead><tr><th>代码</th><th>名称</th><th>分类</th><th class="r">现价</th>'+
+       '<th class="r">涨跌</th><th class="r">溢价</th><th class="r">规模(亿)</th><th class="r">成交额</th></tr></thead><tbody>';
+    rs.slice(0,80).forEach(function(e){
+      h+='<tr><td class="nowrap">'+esc(e.c)+'</td><td class="nowrap">'+esc(e.n)+'</td>'+
+         '<td class="mut sm">'+esc(ETF_CAT[e.cat]||e.cat)+'</td>'+
+         '<td class="r num">'+fmt(e.p,3)+'</td>'+
+         '<td class="r num '+cls(e.chg)+'">'+pct(e.chg)+'</td>'+
+         '<td class="r num" style="color:'+premColor(e.prem)+'">'+(e.prem!=null?fmt(e.prem,2)+"%":"—")+'</td>'+
+         '<td class="r num">'+fmt((e.size||0)/1e8,0)+'</td>'+
+         '<td class="r num">'+fmt((e.amt||0)/1e8,2)+'亿</td></tr>';
+    });
+    h+='</tbody></table></div>';
+    if(rs.length>80) h+='<div class="mut" style="margin-top:8px">共 '+fmtInt(rs.length)+' 只，先显示前 80 只</div>';
+  }
+  h+='</div>';
+
+  $("#view").innerHTML=h;
+  $("#pgActs").innerHTML="";
+  $$("[data-ecat]").forEach(function(b){
+    b.onclick=function(){ ETF_CATSEL=b.getAttribute("data-ecat"); render(); };
+  });
+  var a=$("#_fsz"), b2=$("#_fam"), c2=$("#_fpr");
+  if(a) a.onchange=function(){ ETF_MINSIZE=toNum(a.value); render(); };
+  if(b2) b2.onchange=function(){ ETF_MINAMT=toNum(b2.value); render(); };
+  if(c2) c2.onchange=function(){ ETF_MAXPREM=toNum(c2.value,999); render(); };
+}
+
 /* ===================== 资产配置（股票层面） ===================== */
 /* 这一页专讲「股票怎么配」——钱进了股市之后，在 个股 / 行业 / 核心-卫星 之间怎么分。
    大类(四笔钱)在「投资规划」页，这里不重复。框架都来自金融大咖，参数你说了算。
@@ -1976,10 +2202,12 @@ function renderConfig(){
   hs.forEach(function(h){
     var st=holdingStats(h);
     var meta = sd? sd.stocks.filter(function(s){return String(s.c)===String(h.code);})[0] : null;
-    var isETF = /ETF|基金|指数/.test(h.name||"") || /^(15|51|56)/.test(String(h.code));
-    var ind = meta && meta.ind ? meta.ind : (isETF? "ETF/指数" : "未分类");
+    var cat = etfCatOf(h.code,h.name);
+    var role = holdingRole(h);
+    var ind = meta && meta.ind ? meta.ind : (cat? (ETF_CAT[cat]||cat) : "个股");
     if(st.mv>0) eqMV+=st.mv;
-    items.push({h:h, st:st, meta:meta, ind:ind, isCore:isETF, style: isETF?"核心/指数":stockStyle(meta)});
+    items.push({h:h, st:st, meta:meta, ind:ind, cat:cat, role:role,
+                isCore:(role==="core"), style:(role==="core"?"核心":stockStyle(meta))});
   });
   items.forEach(function(it){ it.w = eqMV>0? it.st.mv/eqMV*100 : 0; });
   items.sort(function(a,b){return b.w-a.w;});
@@ -2086,6 +2314,23 @@ function renderConfig(){
   h+='<tr><td>当前档位</td><td class="num" colspan="2">'+regM.t+(S.alloc.regime==="auto"?"（温度自动）":"（手动）")+'</td><td class="num" style="color:'+regM.c+'">'+regM.t+'</td></tr>';
   h+='</tbody></table>';
 
+  /* —— 每只持仓的角色（可手动改） —— */
+  h+='<div class="seclab" style="margin-top:16px">每只持仓的角色（点一下可改）</div>'+
+     '<div class="mut sm" style="margin-bottom:6px">只有<b>宽基</b>和<b>策略指数</b>算核心；'+
+     '行业主题 ETF 和个股都是卫星。这里按你的判断改，改完上面的占比立刻变。</div>';
+  h+='<table class="dtab"><thead><tr><th>标的</th><th>类型</th><th class="num">占权益</th><th class="c">角色</th></tr></thead><tbody>';
+  if(!items.length){
+    h+='<tr><td colspan="4" class="mut">还没有持仓</td></tr>';
+  }
+  items.forEach(function(it){
+    h+='<tr><td class="nowrap">'+esc(it.h.name||it.h.code)+'</td>'+
+       '<td class="mut sm">'+esc(it.ind||"")+'</td>'+
+       '<td class="num">'+fmt(it.w,1)+'%</td>'+
+       '<td class="c"><button class="btn gh sm" data-role="'+esc(it.h.code)+'">'+
+       (it.role==="core"?"核心":"卫星")+'</button></td></tr>';
+  });
+  h+='</tbody></table>';
+
   /* 调仓清单 */
   h+='<div class="seclab" style="margin-top:14px">调仓清单 / 建议</div>';
   if(breaches.length){
@@ -2110,6 +2355,15 @@ function renderConfig(){
   if(af) af.onclick=function(){
     S.alloc.corePct=f.corePct; S.alloc.singleCap=f.singleCap; S.alloc.sectorCap=f.sectorCap; save(); render();
   };
+  $$("[data-role]").forEach(function(b){
+    b.onclick=function(){
+      var code=b.getAttribute("data-role");
+      var x=S.holdings.filter(function(v){return String(v.code)===String(code);})[0];
+      if(!x) return;
+      x.role = (holdingRole(x)==="core") ? "sat" : "core";
+      save(); render();
+    };
+  });
 }
 /* ===================== 页4 · 选股 ===================== */
 var SCREEN_MIN=0;   /* 0 = 自动挑一个「至少 5 只入选」的最高门槛 */
@@ -2181,6 +2435,21 @@ function renderScreen(){
     if(!minHit) minHit=1;
   }
   var shownAll=res.filter(function(x){return x.hit>=minHit;});
+
+  /* --- 单只股票体检 --- */
+  h+='<div class="card"><h2>单只股票体检 <span class="sub">输入代码/名称，看它命中哪些规则、现在值不值得买</span></h2>'+
+     '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">'+
+     '<input type="text" id="_ckIn" placeholder="代码或名称，如 600519 / 茅台" style="flex:1;min-width:170px">'+
+     '<button class="btn sm" id="_ckBtn">体检</button></div>';
+  var qk=[];
+  S.holdings.forEach(function(x){ if(x.code&&qk.indexOf(x.code)<0) qk.push(x.code); });
+  qk=qk.slice(0,10);
+  if(qk.length){
+    h+='<div class="mut sm" style="margin-bottom:8px">你的持仓：'+
+       qk.map(function(c){return '<span class="tag" data-ckq="'+esc(c)+'" style="cursor:pointer">'+esc(c)+'</span>';}).join(" ")+
+       '</div>';
+  }
+  h+='<div id="_ckOut"></div></div>';
 
   /* --- 规则库 --- */
   h+='<div class="card"><h2>选股规则库 <span class="sub">已启用 '+onN+' / '+S.rules.length+' 条</span></h2>'+
@@ -2306,6 +2575,36 @@ function renderScreen(){
   });
   $$("[data-rv]").forEach(function(el){
     el.onchange=function(){ var i=+el.getAttribute("data-rv"); S.rules[i].val=toNum(el.value,S.rules[i].val); save(); render(); };
+  });
+  var ckIn=$("#_ckIn"), ckBtn=$("#_ckBtn");
+  function runCheck(){
+    if(!ckIn) return;
+    var v=String(ckIn.value||"").trim();
+    if(!v) return;
+    var code=v;
+    if(!/^\d{6}$/.test(v)){
+      var d4=stockData();
+      var ms=(d4?d4.stocks:[]).filter(function(s){return (s.n||"").indexOf(v)>=0;});
+      if(!ms.length){ $("#_ckOut").innerHTML='<div class="mut">没找到「'+esc(v)+'」，试试完整的 6 位代码</div>'; return; }
+      code=ms[0].c;
+    }
+    $("#_ckOut").innerHTML=stockCheckHtml(code);
+    $$("[data-ckw]").forEach(function(b){
+      b.onclick=function(){
+        var c2=b.getAttribute("data-ckw"), n2=b.getAttribute("data-ckwn");
+        if(S.watch.some(function(w){return w.code===c2;})){ toast("已在监控池中"); return; }
+        var d5=stockData(), s2=(d5?d5.stocks:[]).filter(function(s){return s.c===c2;})[0];
+        var pr=s2?s2.p:null;
+        S.watch.push({id:uid(),code:c2,name:n2||c2,addDate:todayStr(),addPrice:pr,
+          targetBuy:pr?Math.round(pr*0.85*100)/100:0,reason:"",status:"watch"});
+        save(); render(); toast("已加入监控池");
+      };
+    });
+  }
+  if(ckBtn) ckBtn.onclick=runCheck;
+  if(ckIn) ckIn.onkeydown=function(e){ if(e.key==="Enter") runCheck(); };
+  $$("[data-ckq]").forEach(function(el){
+    el.onclick=function(){ if(ckIn){ ckIn.value=el.getAttribute("data-ckq"); runCheck(); } };
   });
   var rr=$("#resetRule");
   if(rr) rr.onclick=function(){ S.rules=defaultRules(); save(); render(); toast("已恢复默认规则"); };
@@ -3094,7 +3393,7 @@ function go(id){
 }
 function render(){
   var map={plan:renderPlan,account:renderAccount,hold:renderHold,screen:renderScreen,
-    log:renderLog,temp:renderTemp,dividend:renderDividend,config:renderConfig};
+    log:renderLog,temp:renderTemp,dividend:renderDividend,config:renderConfig,fund:renderFund};
   var v=VIEWS.filter(function(x){return x.id===CUR;})[0];
   $("#pgSub").textContent=v?v.sub:"";
   (map[CUR]||renderPlan)();
@@ -3163,7 +3462,7 @@ document.addEventListener("DOMContentLoaded",boot);
    带版本号的 URL 可绕开浏览器对同一 SW 脚本 24 小时的更新节流。 */
 if("serviceWorker" in navigator && location.protocol!=="file:"){
   window.addEventListener("load",function(){
-    navigator.serviceWorker.register("./sw.js?v=7").then(function(reg){
+    navigator.serviceWorker.register("./sw.js?v=8").then(function(reg){
       reg.update&&reg.update();
     }).catch(function(){});
   });
@@ -3183,7 +3482,7 @@ window.__WB__={get S(){return S;},render:render,go:go,xirr:xirr,twr:twr,metrics:
   applyPairCode:applyPairCode,hasPairHash:hasPairHash,clearPairHash:clearPairHash,
   localIsEmpty:localIsEmpty,cloudPull:cloudPull,cloudProbe:cloudProbe,cloudPush:cloudPush,
   renderSyncBar:renderSyncBar,persist:persist,getSync:function(){return SYNC;},
-  renderConfig:renderConfig,holdingRuleHits:holdingRuleHits,STK_FRAME:STK_FRAME,STK_FRAME_SEL:STK_FRAME_SEL};
+  renderConfig:renderConfig,holdingRuleHits:holdingRuleHits,STK_FRAME:STK_FRAME,STK_FRAME_SEL:STK_FRAME_SEL,stockCheck:stockCheck,stockCheckHtml:stockCheckHtml,renderFund:renderFund,holdingRole:holdingRole};
 </script>
 </body>
 </html>
