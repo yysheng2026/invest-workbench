@@ -1,7 +1,7 @@
 /* 投资实证工作台 · 离线缓存
    目标：装到手机主屏 / 桌面之后，断网也能打开，数据仍可读写（数据在
    localStorage 或桌面版的 data\save.json，都不依赖网络）。 */
-var CACHE = 'invest-v11';
+var CACHE = 'invest-v12';
 var ASSETS = [
   './', './index.html', './manifest.webmanifest',
   './icon-512.png', './apple-touch-icon.png', './stocks_data.js', './etf_data.js'
