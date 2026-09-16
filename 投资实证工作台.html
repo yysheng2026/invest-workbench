@@ -1344,7 +1344,8 @@ function realizedPnl(){
   var s=0;
   (S.trades||[]).forEach(function(t){
     if(t.cost==null||!isFinite(t.cost)) return;
-    s+=(toNum(t.sellPrice)-toNum(t.cost))*toNum(t.shares);
+    /* 已实现盈亏扣掉卖出手续费 + 红利税补扣，才是真正落袋的 */
+    s+=(toNum(t.sellPrice)-toNum(t.cost))*toNum(t.shares) - toNum(t.fee) - toNum(t.divTax);
   });
   return s;
 }
@@ -1356,6 +1357,19 @@ function holdingStats(h){
   var pnlPct=cst>0?pnl/cst*100:null;
   var dayPnl=q?toNum(q.chg)*shares:null;
   return {price:price,mv:mv,cst:cst,pnl:pnl,pnlPct:pnlPct,dayPnl:dayPnl,q:q};
+}
+function totalFees(){
+  /* 手续费 = 买入侧（佣金/过户费等）+ 卖出侧（佣金/印花税等），买卖都会产生 */
+  var b=0;
+  (S.holdings||[]).forEach(function(h){ b+=toNum(h.fee); });
+  (S.trades||[]).forEach(function(t){ b+=toNum(t.fee); });
+  return b;
+}
+function totalDivTax(){
+  /* 红利税补扣只在卖出时发生（持仓不足 1 年卖出、券商补扣股息税差额） */
+  var d=0;
+  (S.trades||[]).forEach(function(t){ d+=toNum(t.divTax); });
+  return d;
 }
 /* ================= 独立卖出：不要求先有买入记录 ================= */
 function openSellNew(){
@@ -1373,8 +1387,10 @@ function openSellNew(){
     '<div class="frow f2"><div><label class="fl">成本价（补录时填，选填）</label>'+
       '<input type="number" step="0.001" id="_sc2" placeholder="留空则不计盈亏"></div>'+
     '<div><label class="fl">卖出理由（选填）</label><input type="text" id="_sr2" placeholder="为什么卖"></div></div>'+
+    '<div class="frow f2" style="margin-top:12px"><div><label class="fl">手续费（选填，含佣金·印花税）</label><input type="number" step="0.01" id="_sfee2" placeholder="0"></div>'+
+    '<div><label class="fl">红利税补扣（选填）</label><input type="number" step="0.01" id="_sdt2" placeholder="0"></div></div>'+
     '<div style="margin-top:12px"><label style="display:flex;align-items:center;gap:8px;font-size:13.5px;cursor:pointer">'+
-    '<input type="checkbox" id="_spay2" checked style="width:17px;height:17px"> <span id="_spaytx">卖出款回到现金余额</span></label></div>'+
+    '<input type="checkbox" id="_spay2" checked style="width:17px;height:17px"> <span id="_spaytx">卖出款回到现金余额（已扣手续费/红利税）</span></label></div>'+
     '<div style="margin-top:9px"><label style="display:flex;align-items:flex-start;gap:8px;font-size:13.5px;cursor:pointer">'+
     '<input type="checkbox" id="_ssnap" style="width:17px;height:17px;margin-top:2px"> '+
     '<span>这笔已经算在持仓快照里了 —— <b>只记盈亏，不再扣减持仓、也不回款到现金</b>'+
@@ -1419,6 +1435,7 @@ function openSellNew(){
     var name=String($("#_sn").value||"").trim();
     var toCash=$("#_spay2").checked;
     var snap=!!($("#_ssnap")&&$("#_ssnap").checked);
+    var fee=toNum($("#_sfee2").value), divTax=toNum($("#_sdt2").value);
     var x=S.holdings.filter(function(v){return v.code===code;})[0];
     var realized=null;
 
@@ -1427,31 +1444,33 @@ function openSellNew(){
       if(snap){
         /* 快照已含：持仓清单本来就是卖出后的数量、现金也已含回款 → 只记一笔盈亏，
            绝不能再扣第二次股数（否则 1000 股会错变成 800 股）。 */
-        realized=(price-cost)*sh;
+        realized=(price-cost)*sh - fee - divTax;
         S.trades.push({id:uid(),code:code,name:x.name||name||code,cost:cost,
-          sellPrice:price,shares:sh,date:date,reason:reason,mode:"快照已含"});
+          sellPrice:price,shares:sh,date:date,reason:reason,mode:"快照已含",fee:fee,divTax:divTax});
       }else{
         sh=Math.min(sh,toNum(x.shares));
         var left=toNum(x.shares)-sh;
-        realized=(price-cost)*sh;
-        if(toCash) S.account.cash=toNum(S.account.cash)+price*sh;
+        realized=(price-cost)*sh - fee - divTax;
+        if(toCash) S.account.cash=toNum(S.account.cash)+price*sh-fee-divTax;
         x.shares=left;
         if(left<=0.0001) S.holdings=S.holdings.filter(function(v){return v.id!==x.id;});
         S.trades.push({id:uid(),code:code,name:x.name||name||code,cost:cost,
-          sellPrice:price,shares:sh,date:date,reason:reason,mode:(left>0?"减仓":"清仓")});
+          sellPrice:price,shares:sh,date:date,reason:reason,mode:(left>0?"减仓":"清仓"),fee:fee,divTax:divTax});
       }
     }else{                                           // 补录：账户里原本就有
       var cs=String($("#_sc2").value||"").trim();
       var cost2=(cs===""?null:toNum(cs));
-      if(cost2!=null) realized=(price-cost2)*sh;
-      if(toCash&&cost2!=null) S.account.cash=toNum(S.account.cash)+(price-cost2)*sh;
+      if(cost2!=null) realized=(price-cost2)*sh - fee - divTax;
+      if(toCash&&cost2!=null) S.account.cash=toNum(S.account.cash)+(price-cost2)*sh-fee-divTax;
       S.trades.push({id:uid(),code:code,name:name||code,cost:cost2,
-        sellPrice:price,shares:sh,date:date,reason:reason,mode:"补录"});
+        sellPrice:price,shares:sh,date:date,reason:reason,mode:"补录",fee:fee,divTax:divTax});
     }
     var snapNote=snap?"\n（快照已含：持仓股数与现金均未做调整，只记这笔盈亏）":"";
+    var fex=(fee>0?(" 手续费 "+money(fee)):"")+(divTax>0?(" 红利税补扣 "+money(divTax)):"");
     S.logs.unshift({id:uid(),date:date,title:((x?"卖出":"卖出（补录）")+" "+(name||(x&&x.name)||code)),mood:"",
       content:(reason?reason+"\n":"")+"卖出价 "+fmt(price,3)+"，数量 "+fmt(sh,0)+" 股。已实现盈亏 "+
-        (realized==null?"—（成本未填，不计盈亏）":((realized>=0?"+":"")+money(realized).replace("¥-","-¥")))+"。"+snapNote,
+        (realized==null?"—（成本未填，不计盈亏）":((realized>=0?"+":"")+money(realized).replace("¥-","-¥")))+
+        (fex?"。"+fex:"")+"。"+snapNote,
       tags:["卖出"],code:code});
     save(); closeModal(); upsertSnap(); render();
     toast(realized==null?"已补录卖出（未计盈亏）":("已记录卖出，盈亏 "+(realized>=0?"+":"")+money(realized)));
@@ -1841,7 +1860,7 @@ function renderHold(){
        fmt(HS300.price,2)+' '+pct(HS300.chgPct)+'</span></div>':'')+
      (S.trades.length?'<div class="mut" style="margin-top:6px">已实现盈亏 <span class="num '+cls(realizedPnl())+'">'+
        (realizedPnl()>=0?"+":"")+money(realizedPnl()).replace("¥-","-¥")+'</span> · 共 '+S.trades.length+
-       ' 笔卖出（含补录）</div>':'')+
+       ' 笔卖出（含补录）'+(totalFees()>0?(' · 累计费用 '+money(totalFees())):'')+(totalDivTax()>0?(' · 红利税补扣 '+money(totalDivTax())):'')+'</div>':'')+
      '</div>';
 
   if(!hs.length){
@@ -1902,18 +1921,27 @@ function renderHold(){
 
   /* 卖出记录（含补录）：账户里已经卖掉的、或在工作台之外卖掉的，都在这里 */
   if(S.trades&&S.trades.length){
+    var _tf=totalFees(), _td=totalDivTax();
     h+='<div class="card" style="margin-top:14px"><div class="rowbtw" style="margin-bottom:10px">'+
        '<h2 style="margin:0">卖出记录</h2>'+
        '<span class="mut">已实现盈亏 <b class="num '+cls(realizedPnl())+'">'+
-         (realizedPnl()>=0?"+":"")+money(realizedPnl()).replace("¥-","-¥")+'</b></span></div>';
+         (realizedPnl()>=0?"+":"")+money(realizedPnl()).replace("¥-","-¥")+'</b></span></div>'+
+       '<div class="mut" style="margin:-4px 0 10px">已产生费用合计 <b class="num">'+money(_tf)+'</b>'+
+         (_tf>0?'（买入手续费 + 卖出手续费）':'')+
+         (_td>0?' · <b style="color:#A63A3A">红利税补扣 '+money(_td)+'</b>':'')+'</div>';
     S.trades.slice().sort(function(a,b){return (b.date||"")<(a.date||"")?-1:1;}).forEach(function(t){
       var cost=t.cost==null?null:toNum(t.cost);
-      var pnl=cost!=null?(toNum(t.sellPrice)-cost)*toNum(t.shares):null;
+      var fee=toNum(t.fee), dtx=toNum(t.divTax);
+      var pnl=cost!=null?((toNum(t.sellPrice)-cost)*toNum(t.shares)-fee-dtx):null;
+      var fex='';
+      if(fee>0) fex+=' · 手续费 '+money(fee);
+      if(dtx>0) fex+=' · 红利税补扣 '+money(dtx);
       h+='<div class="trow">'+
          '<span>'+esc(t.name||t.code)+' <span class="mut sm">'+esc(t.code)+'</span>'+
            '<br><span class="mut sm">'+esc(t.date||"")+' · '+fmt(toNum(t.shares),0)+' 股 · 卖出 '+
-           fmt(toNum(t.sellPrice),3)+(cost!=null?(' · 成本 '+fmt(cost,3)):' · <span style="color:#A63A3A">成本未填</span>')+'</span></span>'+
+           fmt(toNum(t.sellPrice),3)+(cost!=null?(' · 成本 '+fmt(cost,3)):' · <span style="color:#A63A3A">成本未填</span>')+fex+'</span></span>'+
          '<b class="num '+cls(pnl)+'">'+(pnl==null?"—":((pnl>=0?"+":"")+money(pnl).replace("¥-","-¥")))+'</b>'+
+         '<button class="btn gy sm" data-edtrade="'+t.id+'" title="编辑费用">✎</button>'+
          '<button class="btn gy sm" data-deltrade="'+t.id+'" title="删除">×</button></div>';
     });
     h+='</div>';
@@ -1935,8 +1963,9 @@ function renderHold(){
       '<div class="frow f2"><div><label class="fl">目标卖出价（选填）</label><input type="number" step="0.01" id="_ht"></div>'+
       '<div><label class="fl">买入理由（选填）</label><input type="text" id="_hr" placeholder="为什么买它"></div></div>'+
       '<div style="margin-top:12px"><label class="fl">备注</label><input type="text" id="_hk"></div>'+
+      '<div class="frow f2" style="margin-top:12px"><div><label class="fl">手续费 / 其他费用（选填，含佣金·过户费）</label><input type="number" step="0.01" id="_hfee" placeholder="0"></div><div></div></div>'+
       '<div style="margin-top:12px"><label style="display:flex;align-items:center;gap:8px;font-size:13.5px;cursor:pointer">'+
-      '<input type="checkbox" id="_hpay" checked style="width:17px;height:17px"> 从现金余额扣款</label></div>',
+      '<input type="checkbox" id="_hpay" checked style="width:17px;height:17px"> 从现金余额扣款（含手续费）</label></div>',
       '<button class="btn gy" data-close>取消</button><button class="btn" id="_ok">保存</button>');
     $("#_ok").onclick=function(){
       var code=String($("#_hc").value||"").trim();
@@ -1944,12 +1973,14 @@ function renderHold(){
       var price=toNum($("#_hp").value), shares=toNum($("#_hs").value);
       if(price<=0||shares<=0){ toast("请输入买入价和数量"); return; }
       var name=$("#_hn").value.trim();
+      var fee=toNum($("#_hfee").value);
       S.holdings.push({id:uid(),code:code,name:name||code,cost:price,shares:shares,
-        buyDate:normDate($("#_hd").value),targetSell:toNum($("#_ht").value),note:$("#_hk").value.trim()});
-      if($("#_hpay").checked) S.account.cash=toNum(S.account.cash)-price*shares;
+        buyDate:normDate($("#_hd").value),targetSell:toNum($("#_ht").value),note:$("#_hk").value.trim(),fee:fee});
+      if($("#_hpay").checked) S.account.cash=toNum(S.account.cash)-price*shares-fee;
       var reason=$("#_hr").value.trim();
       S.logs.unshift({id:uid(),date:todayStr(),title:"买入 "+(name||code),mood:"",
-        content:(reason?reason+"\n":"")+"买入价 "+fmt(price,3)+"，数量 "+fmt(shares,0)+" 股，合计 "+money(price*shares)+"。",
+        content:(reason?reason+"\n":"")+"买入价 "+fmt(price,3)+"，数量 "+fmt(shares,0)+" 股，合计 "+money(price*shares)+
+          (fee>0?("，手续费 "+money(fee)):"")+"。",
         tags:["买入",code],code:code});
       save(); closeModal();
       refreshAllQuotes(function(){ upsertSnap(); render(); });
@@ -1972,6 +2003,25 @@ function renderHold(){
     };
   });
 
+  $$("[data-edtrade]").forEach(function(el){
+    el.onclick=function(){
+      var id=el.getAttribute("data-edtrade");
+      var t=S.trades.filter(function(v){return v.id===id;})[0]; if(!t) return;
+      openModal("编辑费用 · "+esc(t.name||t.code),
+        '<div class="mut sm" style="margin-bottom:10px">'+esc(t.date||"")+' · '+fmt(toNum(t.shares),0)+' 股 · 卖出 '+
+          fmt(toNum(t.sellPrice),3)+'</div>'+
+        '<div class="frow f2"><div><label class="fl">手续费</label><input type="number" step="0.01" id="_tfee" value="'+toNum(t.fee)+'"></div>'+
+        '<div><label class="fl">红利税补扣</label><input type="number" step="0.01" id="_tdt" value="'+toNum(t.divTax)+'"></div></div>'+
+        '<div style="margin-top:12px"><label class="fl">卖出理由</label><input type="text" id="_treason" value="'+esc(t.reason||"")+'"></div>',
+        '<button class="btn gy" data-close>取消</button><button class="btn" id="_ok">保存</button>');
+      $("#_ok").onclick=function(){
+        t.fee=toNum($("#_tfee").value); t.divTax=toNum($("#_tdt").value);
+        t.reason=String($("#_treason").value||"").trim();
+        save(); closeModal(); render(); toast("已保存");
+      };
+    };
+  });
+
   var rf=$("#rfq");
   if(rf) rf.onclick=function(){ refreshAllQuotes(function(){ render(); toast("行情已刷新"); }); };
   var hf=$("#_hfilter");
@@ -1988,8 +2038,10 @@ function renderHold(){
         '<div class="frow f2"><div><label class="fl">卖出价</label><input type="number" step="0.001" id="_sp" value="'+fmt(st.price,3)+'"></div>'+
         '<div><label class="fl">卖出数量</label><input type="number" step="100" id="_ss" value="'+fmt(toNum(x.shares),0)+'"></div></div>'+
         '<div><label class="fl">卖出理由</label><input type="text" id="_sr" placeholder="为什么卖（写下来，将来复盘用）"></div>'+
+        '<div class="frow f2" style="margin-top:12px"><div><label class="fl">手续费（选填，含佣金·印花税）</label><input type="number" step="0.01" id="_sfee" placeholder="0"></div>'+
+        '<div><label class="fl">红利税补扣（选填）</label><input type="number" step="0.01" id="_sdt" placeholder="0"></div></div>'+
         '<div style="margin-top:12px"><label style="display:flex;align-items:center;gap:8px;font-size:13.5px;cursor:pointer">'+
-        '<input type="checkbox" id="_spay" checked style="width:17px;height:17px"> 卖出款回到现金余额</label></div>'+
+        '<input type="checkbox" id="_spay" checked style="width:17px;height:17px"> 卖出款回到现金余额（已扣手续费/红利税）</label></div>'+
         '<div style="margin-top:9px"><label style="display:flex;align-items:flex-start;gap:8px;font-size:13.5px;cursor:pointer">'+
         '<input type="checkbox" id="_ssnap2" style="width:17px;height:17px;margin-top:2px"> '+
         '<span>这笔已经算在持仓快照里了 —— <b>只记盈亏，不再扣减持仓、也不回款到现金</b>'+
@@ -1999,25 +2051,27 @@ function renderHold(){
         var price=toNum($("#_sp").value), sh=toNum($("#_ss").value);
         if(price<=0||sh<=0){ toast("请输入卖出价和数量"); return; }
         sh=Math.min(sh,toNum(x.shares));
-        var realized=(price-toNum(x.cost))*sh;
+        var fee=toNum($("#_sfee").value), divTax=toNum($("#_sdt").value);
+        var realized=(price-toNum(x.cost))*sh - fee - divTax;
         var snap=!!($("#_ssnap2")&&$("#_ssnap2").checked);
         var left,mode;
         if(snap){
           /* 快照已含：这份持仓数量本来就是卖出之后的结果，只补记盈亏，不扣股、不回现金 */
           left=toNum(x.shares); mode="快照已含";
         }else{
-          if($("#_spay").checked) S.account.cash=toNum(S.account.cash)+price*sh;
+          if($("#_spay").checked) S.account.cash=toNum(S.account.cash)+price*sh-fee-divTax;
           x.shares=toNum(x.shares)-sh;
           left=x.shares;
           if(left<=0.0001) S.holdings=S.holdings.filter(function(v){return v.id!==id;});
           mode=(left>0?"减仓":"清仓");
         }
         S.trades.push({id:uid(),code:x.code,name:x.name||x.code,cost:toNum(x.cost),
-          sellPrice:price,shares:sh,date:todayStr(),reason:$("#_sr").value.trim(),mode:mode});
+          sellPrice:price,shares:sh,date:todayStr(),reason:$("#_sr").value.trim(),mode:mode,fee:fee,divTax:divTax});
         var reason=$("#_sr").value.trim();
+        var fex=(fee>0?("，手续费 "+money(fee)):"")+(divTax>0?("，红利税补扣 "+money(divTax)):"");
         S.logs.unshift({id:uid(),date:todayStr(),
           title:(mode==="快照已含"?"补记卖出 ":left>0?"减仓 ":"清仓 ")+(x.name||x.code),mood:"",
-          content:(reason?reason+"\n":"")+"卖出价 "+fmt(price,3)+"，数量 "+fmt(sh,0)+" 股。本次实现盈亏 "+
+          content:(reason?reason+"\n":"")+"卖出价 "+fmt(price,3)+"，数量 "+fmt(sh,0)+" 股"+fex+"。本次实现盈亏 "+
           (realized>=0?"+":"")+money(realized)+"（"+pct(toNum(x.cost)>0?realized/(toNum(x.cost)*sh)*100:0)+"）。"+
           (snap?"\n（该笔成交已含在持仓快照中，未再扣减持仓、也未回款到现金）":""),
           tags:["卖出",x.code],code:x.code});
@@ -2037,6 +2091,7 @@ function renderHold(){
         '<div><label class="fl">数量</label><input type="number" step="100" id="_es" value="'+toNum(x.shares)+'"></div>'+
         '<div><label class="fl">买入日期</label><input type="date" id="_ed" value="'+esc(x.buyDate||"")+'"></div></div>'+
         '<div><label class="fl">目标卖出价</label><input type="number" step="0.01" id="_et" value="'+(x.targetSell||"")+'"></div>'+
+        '<div style="margin-top:12px"><label class="fl">买入手续费（选填）</label><input type="number" step="0.01" id="_ef" value="'+(toNum(x.fee))+'"></div>'+
         '<div style="margin-top:12px"><label class="fl">备注</label><input type="text" id="_ek" value="'+esc(x.note||"")+'"></div>',
         '<button class="btn dg" id="_del" style="margin-right:auto">删除</button>'+
         '<button class="btn gy" data-close>取消</button><button class="btn" id="_ok">保存</button>');
@@ -2044,6 +2099,7 @@ function renderHold(){
         x.name=$("#_en").value.trim()||x.code; x.code=String($("#_ec").value).trim()||x.code;
         x.cost=toNum($("#_ep").value); x.shares=toNum($("#_es").value);
         x.buyDate=normDate($("#_ed").value); x.targetSell=toNum($("#_et").value); x.note=$("#_ek").value.trim();
+        x.fee=toNum($("#_ef").value);
         save(); closeModal(); upsertSnap(); render(); toast("已保存");
       };
       $("#_del").onclick=function(){
@@ -3642,7 +3698,7 @@ document.addEventListener("DOMContentLoaded",boot);
    带版本号的 URL 可绕开浏览器对同一 SW 脚本 24 小时的更新节流。 */
 if("serviceWorker" in navigator && location.protocol!=="file:"){
   window.addEventListener("load",function(){
-    navigator.serviceWorker.register("./sw.js?v=10").then(function(reg){
+    navigator.serviceWorker.register("./sw.js?v=11").then(function(reg){
       reg.update&&reg.update();
     }).catch(function(){});
   });
