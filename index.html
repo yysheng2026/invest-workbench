@@ -640,6 +640,97 @@ function metrics(){
     xirr:xr!=null?xr*100:null, annual:annual!=null?annual*100:null, twr:tw!=null?tw*100:null, simple:simple};
 }
 
+/* ================= 数据自检 / 修正（修复「可用现金／净值曲线」混乱） ================= */
+/* 股票代码按名称反查（用于标准交易补录）：先精确匹配，再前缀/包含匹配 */
+function codeByName(name){
+  var d=stockData(); if(!d||!d.stocks) return null;
+  var hit=null;
+  d.stocks.forEach(function(s){ if(s.n===name) hit=s.c; });
+  if(hit) return hit;
+  d.stocks.forEach(function(s){ if((s.n||"").indexOf(name)>=0) hit=s.c; });
+  return hit;
+}
+/* 可用现金 = 所有资金流水(转入+ / 转出−) − 当前持仓买入成本与费用 + 非快照卖出的回款 − 其他资产
+   ⚠️ 与「导入持仓补记的投入本金 = 持仓成本+现金+其他」自洽：导入本金流里含的持仓成本会被 Σ持仓 抵消，
+   剩下的就是真实可用现金。如果「其他资产」为 0（纯股票账户），公式直接成立。 */
+function recomputeCash(){
+  var cash=0;
+  (S.account.flows||[]).forEach(function(f){ cash += (f.type==="out"?-1:1)*toNum(f.amount); });
+  (S.holdings||[]).forEach(function(h){ cash -= toNum(h.cost)*toNum(h.shares) + toNum(h.fee); });
+  (S.trades||[]).forEach(function(t){ if(t.mode==="快照已含") return; cash += toNum(t.sellPrice)*toNum(t.shares) - toNum(t.fee) - toNum(t.divTax); });
+  cash -= toNum(S.account.other);
+  S.account.cash=Math.round(cash*100)/100;
+  save(); render(); toast("已重算可用现金：¥"+fmt(S.account.cash,2));
+}
+/* 把「初始本金补记」那笔流水的日期改回实证起点（避免被算成「第 1 天就亏一大截」） */
+function fixInitialFlowDate(){
+  var sd=S.account.startDate||todayStr(); var n=0;
+  (S.account.flows||[]).forEach(function(f){
+    if(f.note && f.note.indexOf("补记投入本金")>=0 && f.date>sd){ f.date=sd; n++; }
+  });
+  if(n){ save(); render(); }
+  toast(n? ("已把 "+n+" 笔初始本金日期改回 "+sd) : "没有需要修正的初始本金日期");
+}
+/* 按资金流水重算每一天的总资产，回填净值快照，让收益曲线能画出来。
+   历史日用「成本基准」估值（没有历史行情）；今天用实时价。 */
+function backfillSnaps(){
+  var dates={}; dates[S.account.startDate||todayStr()]=1; dates[todayStr()]=1;
+  (S.account.flows||[]).forEach(function(f){ dates[f.date]=1; });
+  (S.holdings||[]).forEach(function(h){ if(h.buyDate) dates[h.buyDate]=1; });
+  (S.trades||[]).forEach(function(t){ if(t.date) dates[t.date]=1; });
+  var ds=Object.keys(dates).sort(), snaps=[];
+  ds.forEach(function(d){
+    var cash=0;
+    (S.account.flows||[]).forEach(function(f){ if(f.date<=d) cash += (f.type==="out"?-1:1)*toNum(f.amount); });
+    (S.holdings||[]).forEach(function(h){ if(h.buyDate<=d) cash -= toNum(h.cost)*toNum(h.shares)+toNum(h.fee); });
+    (S.trades||[]).forEach(function(t){ if(t.date<=d && t.mode!=="快照已含") cash += toNum(t.sellPrice)*toNum(t.shares)-toNum(t.fee)-toNum(t.divTax); });
+    cash -= toNum(S.account.other);
+    var mv=0;
+    (S.holdings||[]).forEach(function(h){
+      if(!(h.buyDate<=d)) return;
+      var sold=0;
+      (S.trades||[]).forEach(function(t){ if(t.code===h.code && t.mode!=="快照已含" && t.date<=d) sold+=toNum(t.shares); });
+      var sh=toNum(h.shares)-sold; if(sh<=0) return;
+      var price = (d===todayStr()) ? (QUOTE[h.code]?toNum(QUOTE[h.code].price):toNum(h.cost)) : toNum(h.cost);
+      mv += price*sh;
+    });
+    snaps.push({date:d, total:Math.round((mv+cash+toNum(S.account.other))*100)/100});
+  });
+  S.account.snaps=snaps; save(); render(); toast("已回填 "+snaps.length+" 条净值快照，曲线可显示");
+}
+/* 一键补录用户给出的 6 笔标准交易（自动去重，不覆盖已有数据） */
+function applyStandardTxns(){
+  var added=0, skipped=0;
+  function addFlow(date,type,amount,note){
+    if((S.account.flows||[]).some(function(f){return f.date===date&&f.type===type&&Math.abs(toNum(f.amount)-amount)<0.005;})){ skipped++; return; }
+    S.account.flows.push({id:uid(),date:date,type:type,amount:amount,note:note}); added++;
+  }
+  function addBuy(name,price,shares,fee,date){
+    var code=codeByName(name);
+    if(!code){ toast("找不到代码："+name+"（跳过该笔买入）"); return; }
+    if((S.holdings||[]).some(function(h){return h.code===code&&h.buyDate===date&&Math.abs(toNum(h.cost)-price)<0.005&&Math.abs(toNum(h.shares)-shares)<0.005;})){ skipped++; return; }
+    S.holdings.push({id:uid(),code:code,name:name,cost:price,shares:shares,buyDate:date,targetSell:0,note:"标准交易补录",fee:fee});
+    added++;
+  }
+  function addSnapSell(code,sellPrice,shares,fee,date){
+    var hh=(S.holdings||[]).filter(function(h){return h.code===code;})[0];
+    var cost=hh?toNum(hh.cost):60.499;
+    if((S.trades||[]).some(function(t){return t.code===code&&t.date===date&&Math.abs(toNum(t.shares)-shares)<0.005&&Math.abs(toNum(t.sellPrice)-sellPrice)<0.005;})){ skipped++; return; }
+    S.trades.push({id:uid(),code:code,name:hh?hh.name:code,cost:cost,sellPrice:sellPrice,shares:shares,date:date,reason:"标准交易补录（快照已含）",mode:"快照已含",fee:fee,divTax:0});
+    added++;
+  }
+  addFlow("2026-09-14","in",15000,"资金转入（标准交易补录）");
+  addFlow("2026-09-16","in",10000,"资金转入（标准交易补录）");
+  addBuy("中创智领",13.99,300,5.04,"2026-09-14");
+  addBuy("华明装备",18.61,200,5.04,"2026-09-14");
+  addBuy("紫金矿业",31.81,100,5.03,"2026-09-15");
+  addSnapSell("600343",19.65,200,7.01,"2026-09-14");
+  fixInitialFlowDate();
+  recomputeCash();
+  backfillSnaps();
+  toast("标准交易补录完成：新增 "+added+" 笔，已存在跳过 "+skipped+" 笔");
+}
+
 /* ---------------- 行情（腾讯 JSONP） ---------------- */
 var QUOTE = {};        // code -> {name,price,prev,chg,chgPct,pe,pb,mc,open,high,low,time}
 var HS300 = null;
@@ -1304,7 +1395,10 @@ function renderAccount(){
     $("#_ok").onclick=function(){
       var amt=toNum($("#_fa").value);
       if(amt<=0){ toast("请输入金额"); return; }
-      S.account.flows.push({id:uid(),date:normDate($("#_fd").value),type:$("#_ft").value,amount:amt,note:$("#_fn").value.trim()});
+      var ft=$("#_ft").value;
+      S.account.flows.push({id:uid(),date:normDate($("#_fd").value),type:ft,amount:amt,note:$("#_fn").value.trim()});
+      /* 资金进出必须同步调整可用现金，否则「可用现金」会和买卖记录的现金变动对不上（之前就是这里漏了导致混乱） */
+      S.account.cash=toNum(S.account.cash)+(ft==="out"?-amt:amt);
       save(); closeModal(); upsertSnap(); render();
     };
   };
@@ -1618,7 +1712,7 @@ function openImportHoldings(){
       '同时补记一笔转入（否则「投入本金」为 0，XIRR 算不出来）</label>'+
       '<div class="frow f2" style="margin-top:8px">'+
         '<div><label class="fl">补记转入金额 ¥</label><input type="number" step="0.01" id="_impAmt"></div>'+
-        '<div><label class="fl">转入日期</label><input type="date" id="_impDate" value="'+todayStr()+'"></div></div>'+
+        '<div><label class="fl">转入日期</label><input type="date" id="_impDate" value="'+(S.account.startDate||todayStr())+'"></div></div>'+
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">'+
         '<button type="button" class="btn gh sm" id="_impP1"></button>'+
         '<button type="button" class="btn gh sm" id="_impP2"></button></div>'+
@@ -3446,6 +3540,16 @@ function openSettings(){
     '<a class="btn gh sm" href="./安装到手机.html" target="_blank" rel="noopener" '+
       'style="text-decoration:none;display:inline-flex;align-items:center">装到手机 / 多设备说明</a></div>'+
     '<div class="hr"></div>'+
+    '<h3 class="sec-title">数据自检 / 修正</h3>'+
+    '<div class="mut" style="margin-bottom:8px;font-size:12.5px;line-height:1.7">'+
+      '如果「可用现金」或「收益率」看起来不对，按顺序点：先<b>重算可用现金</b> → <b>回填净值曲线</b> → '+
+      '如需可点<b>修正初始本金日期</b>。标准交易已发生但未录入时，点<b>一键补录</b>（自动去重，不会重复记）。</div>'+
+    '<div style="display:flex;gap:8px;flex-wrap:wrap">'+
+      '<button class="btn gh sm" id="_fixCash">重算可用现金</button>'+
+      '<button class="btn gh sm" id="_fixSnap">回填净值曲线</button>'+
+      '<button class="btn gy sm" id="_fixDate">修正初始本金日期</button>'+
+      '<button class="btn" id="_fixStd">一键补录标准交易</button></div>'+
+    '<div class="hr"></div>'+
     '<h3 class="sec-title">自动记录</h3>'+
     '<label style="display:flex;align-items:center;gap:9px;font-size:14px;cursor:pointer">'+
     '<input type="checkbox" id="_as" '+(st.autoSnap!==false?"checked":"")+' style="width:17px;height:17px"> '+
@@ -3565,6 +3669,12 @@ function openSettings(){
     });
   };
   $("#_as").onchange=function(){ S.settings.autoSnap=$("#_as").checked; save(); };
+  var fb=$("#_fixCash"); if(fb) fb.onclick=function(){ recomputeCash(); };
+  var fs=$("#_fixSnap"); if(fs) fs.onclick=function(){ backfillSnaps(); };
+  var fd=$("#_fixDate"); if(fd) fd.onclick=function(){ fixInitialFlowDate(); };
+  var fst=$("#_fixStd"); if(fst) fst.onclick=function(){
+    confirmBox("一键补录标准交易？","将按 2026-09-14~09-16 的 6 笔标准交易补录（资金转入×2、买入×3、航天动力卖出[快照已含]×1），已存在的会自动跳过。补录后会自动重算现金并回填曲线。",function(){ applyStandardTxns(); });
+  };
 }
 function demoState(){
   var s=seedState();
@@ -3698,7 +3808,7 @@ document.addEventListener("DOMContentLoaded",boot);
    带版本号的 URL 可绕开浏览器对同一 SW 脚本 24 小时的更新节流。 */
 if("serviceWorker" in navigator && location.protocol!=="file:"){
   window.addEventListener("load",function(){
-    navigator.serviceWorker.register("./sw.js?v=11").then(function(reg){
+    navigator.serviceWorker.register("./sw.js?v=12").then(function(reg){
       reg.update&&reg.update();
     }).catch(function(){});
   });
